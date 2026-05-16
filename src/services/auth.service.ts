@@ -1,0 +1,98 @@
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import User from '../models/user.model';
+import { storageService } from './storage.service';
+import UserDocument from '../models/document.model';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'secret';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+
+export const authService = {
+  register: async (userData: any) => {
+    const existingUser = await User.findOne({
+      $or: [
+        { email: userData.email },
+        { phoneNumber: userData.phoneNumber }
+      ]
+    });
+
+    if (existingUser) {
+      return { success: false, message: 'User with this email or phone number already exists' };
+    }
+
+    const hashedPassword = await bcrypt.hash(userData.password, 10);
+
+    const user = await User.create({
+      ...userData,
+      password: hashedPassword,
+      isActive: true,
+    });
+
+    const accessToken = jwt.sign({ id: user._id.toString(), email: user.email }, JWT_SECRET, {
+      expiresIn: JWT_EXPIRES_IN as any,
+    });
+
+    return {
+      success: true,
+      data: {
+        user,
+        accessToken,
+        refreshToken: 'mock-refresh-token-' + Date.now(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      }
+    };
+  },
+
+  login: async (email: string, pass: string) => {
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return { success: false, message: 'Invalid credentials' };
+    }
+
+    const isMatch = await bcrypt.compare(pass, user.password);
+    if (!isMatch) {
+      return { success: false, message: 'Invalid credentials' };
+    }
+
+    const accessToken = jwt.sign({ id: user._id.toString(), email: user.email }, JWT_SECRET, {
+      expiresIn: JWT_EXPIRES_IN as any,
+    });
+
+    return {
+      success: true,
+      data: {
+        user,
+        accessToken,
+        refreshToken: 'mock-refresh-token-' + Date.now(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      }
+    };
+  },
+
+  getMe: async (id: string) => {
+    return User.findById(id);
+  },
+
+  verifyKyc: async (userId: string, files: any[]) => {
+    const documentUrls: string[] = [];
+
+    for (const file of files) {
+      const fileName = `kyc/${userId}/${Date.now()}-${file.originalname}`;
+      const url = await storageService.uploadFile(file.buffer, fileName, file.mimetype);
+      
+      await UserDocument.create({
+        userId,
+        type: 'KYC_DOC',
+        documentUrl: url,
+        isVerified: false,
+      });
+
+      documentUrls.push(url);
+    }
+
+    await User.findByIdAndUpdate(userId, { kycStatus: 'Submitted' });
+
+    return { success: true, message: 'KYC documents submitted successfully' };
+  }
+};
