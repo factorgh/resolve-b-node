@@ -43,8 +43,13 @@ export const authService = {
     };
   },
 
-  login: async (email: string, pass: string) => {
-    const user = await User.findOne({ email });
+  login: async (identifier: string, pass: string) => {
+    const user = await User.findOne({
+      $or: [
+        { email: identifier },
+        { phoneNumber: identifier }
+      ]
+    });
 
     if (!user) {
       return { success: false, message: 'Invalid credentials' };

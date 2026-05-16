@@ -9,10 +9,10 @@ const registerSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   phoneNumber: z.string().min(1),
-});
+}).passthrough();
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  identifier: z.string().min(1),
   password: z.string(),
 });
 
@@ -38,7 +38,7 @@ export const authController = {
   login: async (req: Request, res: Response) => {
     try {
       const validatedData = loginSchema.parse(req.body);
-      const result = await authService.login(validatedData.email, validatedData.password);
+      const result = await authService.login(validatedData.identifier, validatedData.password);
       
       if (!result.success) {
         return res.status(401).json(responseFactory.unauthorized(result.message));
