@@ -54,5 +54,63 @@ export const userController = {
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
     }
+  },
+
+  getMe: async (req: any, res: Response) => {
+    try {
+      const userId = req.user.id;
+      const user = await User.findById(userId).select('-password');
+      if (!user) {
+        return res.status(404).json(responseFactory.notFound('User not found'));
+      }
+      return res.json(responseFactory.success(user, 'Current user profile fetched'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  updateProfile: async (req: any, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json(responseFactory.unauthorized('User identity not found in token'));
+      }
+
+      const { firstName, lastName, email } = req.body;
+      
+      // Basic validation
+      if (!firstName || !lastName || !email) {
+        return res.status(400).json(responseFactory.error('First name, last name, and email are required'));
+      }
+
+      console.log(`[UpdateProfile] Attempting update for user ${userId}`, req.body);
+
+      // Check if email is already taken by another user
+      const existingUser = await User.findOne({ email, _id: { $ne: userId } });
+      if (existingUser) {
+        console.warn(`[UpdateProfile] Email conflict: ${email}`);
+        return res.status(400).json(responseFactory.error('This email is already associated with another account'));
+      }
+
+      const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        { $set: { firstName, lastName, email } },
+        { new: true, runValidators: true }
+      ).select('-password');
+
+      if (!updatedUser) {
+        console.error(`[UpdateProfile] User ${userId} not found`);
+        return res.status(404).json(responseFactory.notFound('Account not found'));
+      }
+
+      console.log(`[UpdateProfile] Success for user ${userId}`);
+      return res.json(responseFactory.success(updatedUser, 'Profile updated successfully'));
+    } catch (error: any) {
+      console.error('[UpdateProfile] Critical Error:', error);
+      return res.status(500).json(responseFactory.error(error.message || 'An internal server error occurred during update'));
+    }
   }
+
+
 };
+

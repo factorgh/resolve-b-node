@@ -8,6 +8,7 @@ export const authMiddleware = (req: any, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.warn('[AuthMiddleware] Missing or invalid authorization header');
     return res.status(401).json(responseFactory.unauthorized('No token provided'));
   }
 
@@ -15,9 +16,11 @@ export const authMiddleware = (req: any, res: Response, next: NextFunction) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    console.log('[AuthMiddleware] Token verified successfully for user:', (decoded as any).id);
     req.user = decoded;
     next();
   } catch (error) {
+    console.error('[AuthMiddleware] Token verification failed:', (error as Error).message);
     return res.status(401).json(responseFactory.unauthorized('Invalid or expired token'));
   }
 };

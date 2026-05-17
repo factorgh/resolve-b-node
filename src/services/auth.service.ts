@@ -21,6 +21,8 @@ export const authService = {
     }
 
     const hashedPassword = await bcrypt.hash(userData.password, 10);
+    
+    console.log('Registering user with data:', JSON.stringify(userData, null, 2));
 
     const user = await User.create({
       ...userData,

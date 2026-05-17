@@ -7,6 +7,9 @@ import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
 import institutionRoutes from './routes/institution.routes';
 import productRoutes from './routes/product.routes';
+import applicationRoutes from './routes/application.routes';
+import transactionRoutes from './routes/transaction.routes';
+import documentRoutes from './routes/document.routes';
 import newsRoutes from './routes/news.routes';
 
 dotenv.config();
@@ -23,6 +26,9 @@ app.use('/api/v1/Auth', authRoutes);
 app.use('/api/v1/Users', userRoutes);
 app.use('/api/v1/Institutions', institutionRoutes);
 app.use('/api/v1/Products', productRoutes);
+app.use('/api/v1/Applications', applicationRoutes);
+app.use('/api/v1/Transactions', transactionRoutes);
+app.use('/api/v1/Documents', documentRoutes);
 app.use('/api/v1/News', newsRoutes);
 app.get('/health', (req, res) => {
   res.json({ 
