@@ -11,6 +11,8 @@ import applicationRoutes from './routes/application.routes';
 import transactionRoutes from './routes/transaction.routes';
 import documentRoutes from './routes/document.routes';
 import newsRoutes from './routes/news.routes';
+import auditRoutes from './routes/audit.routes';
+import billingRoutes from './routes/billing.routes';
 
 dotenv.config();
 
@@ -30,6 +32,8 @@ app.use('/api/v1/Applications', applicationRoutes);
 app.use('/api/v1/Transactions', transactionRoutes);
 app.use('/api/v1/Documents', documentRoutes);
 app.use('/api/v1/News', newsRoutes);
+app.use('/api/v1/Audit', auditRoutes);
+app.use('/api/v1/Billing', billingRoutes);
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 

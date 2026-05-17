@@ -32,5 +32,18 @@ export const institutionController = {
     } catch (error: any) {
       return res.status(400).json(responseFactory.error(error.message));
     }
+  },
+
+  update: async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const updated = await Institution.findByIdAndUpdate(id, req.body, { new: true });
+      if (!updated) {
+        return res.status(404).json(responseFactory.notFound('Institution not found'));
+      }
+      return res.json(responseFactory.success(updated, 'Institution parameters updated successfully'));
+    } catch (error: any) {
+      return res.status(400).json(responseFactory.error(error.message));
+    }
   }
 };

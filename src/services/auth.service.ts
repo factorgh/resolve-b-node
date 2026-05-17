@@ -30,9 +30,18 @@ export const authService = {
       isActive: true,
     });
 
-    const accessToken = jwt.sign({ id: user._id.toString(), email: user.email }, JWT_SECRET, {
-      expiresIn: JWT_EXPIRES_IN as any,
-    });
+    const accessToken = jwt.sign(
+      { 
+        id: user._id.toString(), 
+        email: user.email,
+        role: user.role,
+        institutionId: user.institutionId ? user.institutionId.toString() : undefined
+      }, 
+      JWT_SECRET, 
+      {
+        expiresIn: JWT_EXPIRES_IN as any,
+      }
+    );
 
     return {
       success: true,
@@ -62,9 +71,18 @@ export const authService = {
       return { success: false, message: 'Invalid credentials' };
     }
 
-    const accessToken = jwt.sign({ id: user._id.toString(), email: user.email }, JWT_SECRET, {
-      expiresIn: JWT_EXPIRES_IN as any,
-    });
+    const accessToken = jwt.sign(
+      { 
+        id: user._id.toString(), 
+        email: user.email,
+        role: user.role,
+        institutionId: user.institutionId ? user.institutionId.toString() : undefined
+      }, 
+      JWT_SECRET, 
+      {
+        expiresIn: JWT_EXPIRES_IN as any,
+      }
+    );
 
     return {
       success: true,

@@ -7,5 +7,6 @@ const router = Router();
 router.get('/', institutionController.getAll);
 router.get('/:id', institutionController.getById);
 router.post('/', authMiddleware, institutionController.create);
+router.patch('/:id', authMiddleware, institutionController.update);
 
 export default router;

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { responseFactory } from '../utils/responseFactory';
 import User from '../models/user.model';
+import { auditLogger } from '../utils/auditLogger';
 
 export const userController = {
   getAllUsers: async (req: Request, res: Response) => {
@@ -109,8 +110,39 @@ export const userController = {
       console.error('[UpdateProfile] Critical Error:', error);
       return res.status(500).json(responseFactory.error(error.message || 'An internal server error occurred during update'));
     }
+  },
+
+  adminUpdateUser: async (req: any, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { role, isActive, kycStatus } = req.body;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json(responseFactory.notFound('User profile not found'));
+      }
+
+      if (role !== undefined) user.role = role;
+      if (isActive !== undefined) user.isActive = isActive;
+      if (kycStatus !== undefined) user.kycStatus = kycStatus;
+
+      await user.save();
+
+      // Log action to compliance ledger
+      await auditLogger.log({
+        adminId: req.user.id,
+        institutionId: req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin' ? req.user.institutionId : undefined,
+        action: 'UpdateUser',
+        targetId: user._id as any,
+        details: `Modified parameter details for user ${user.firstName} {${user.lastName}} (Role: ${role !== undefined ? role : 'Unchanged'}, Active: ${isActive !== undefined ? isActive : 'Unchanged'}).`,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent']
+      });
+
+      console.log(`[UserAdministration] Admin updated user ${id} profile state.`);
+      return res.json(responseFactory.success(user, 'User profile updated successfully by administrator'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
   }
-
-
 };
-

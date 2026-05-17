@@ -24,5 +24,27 @@ export const transactionController = {
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
     }
+  },
+
+  createTransaction: async (req: Request, res: Response) => {
+    try {
+      const { userId, applicationId, institutionId, description, amount, type, category, status } = req.body;
+      const reference = `${type === 'debit' ? 'REPAY' : 'DISB'}-${Date.now().toString().slice(-6)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      
+      const tx = await Transaction.create({
+        userId,
+        applicationId,
+        institutionId,
+        description,
+        amount,
+        type,
+        category,
+        status: status || 'Completed',
+        reference
+      });
+      return res.status(201).json(responseFactory.success(tx, 'Transaction logged successfully'));
+    } catch (error: any) {
+      return res.status(400).json(responseFactory.error(error.message));
+    }
   }
 };

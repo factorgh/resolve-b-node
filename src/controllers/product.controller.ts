@@ -70,7 +70,7 @@ export const productController = {
           rateSuffix: p.productType === 'insurance' ? '/mo' : '%',
           trust: 95, // Default for now
           match: 90, // Default for now
-          logo: institution?.logoUrl || '/resolve_icon.png',
+          logo: p.imageUrl || institution?.logoUrl || '/resolve_icon.png',
           tag: p.isFeatured ? 'Featured' : '',
           desc: p.description
         };
@@ -96,6 +96,32 @@ export const productController = {
     try {
       const product = await FinancialProduct.create(req.body);
       return res.status(201).json(responseFactory.success(product, 'Product created successfully'));
+    } catch (error: any) {
+      return res.status(400).json(responseFactory.error(error.message));
+    }
+  },
+  
+  update: async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const product = await FinancialProduct.findByIdAndUpdate(id, req.body, { new: true });
+      if (!product) {
+        return res.status(404).json(responseFactory.notFound('Product not found'));
+      }
+      return res.json(responseFactory.success(product, 'Product updated successfully'));
+    } catch (error: any) {
+      return res.status(400).json(responseFactory.error(error.message));
+    }
+  },
+
+  delete: async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const product = await FinancialProduct.findByIdAndDelete(id);
+      if (!product) {
+        return res.status(404).json(responseFactory.notFound('Product not found'));
+      }
+      return res.json(responseFactory.success(null, 'Product deleted successfully'));
     } catch (error: any) {
       return res.status(400).json(responseFactory.error(error.message));
     }

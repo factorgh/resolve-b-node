@@ -9,5 +9,7 @@ router.get('/recommendations', authMiddleware, productController.recommendations
 router.get('/', productController.getAll);
 router.get('/:id', productController.getById);
 router.post('/', authMiddleware, productController.create);
+router.patch('/:id', authMiddleware, productController.update);
+router.delete('/:id', authMiddleware, productController.delete);
 
 export default router;

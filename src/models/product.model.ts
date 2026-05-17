@@ -16,6 +16,7 @@ export interface IFinancialProduct extends Document {
   isActive: boolean;
   isFeatured: boolean;
   displayOrder: number;
+  imageUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +38,7 @@ const FinancialProductSchema: Schema = new Schema(
     isActive: { type: Boolean, default: true },
     isFeatured: { type: Boolean, default: false },
     displayOrder: { type: Number, default: 0 },
+    imageUrl: { type: String, default: '' },
   },
   { timestamps: true }
 );
