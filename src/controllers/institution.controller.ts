@@ -45,5 +45,17 @@ export const institutionController = {
     } catch (error: any) {
       return res.status(400).json(responseFactory.error(error.message));
     }
+  },
+
+  getAllForAdmin: async (req: any, res: Response) => {
+    try {
+      if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
+        return res.status(403).json(responseFactory.error('Unauthorized accessor context', null, 403));
+      }
+      const institutions = await Institution.find({});
+      return res.json(responseFactory.success(institutions, 'Institutions fetched successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
   }
 };

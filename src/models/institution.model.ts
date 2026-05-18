@@ -30,6 +30,8 @@ export interface IInstitution extends Document {
   coreBankingAutoDisburse: boolean;
   coreBankingAuthToken?: string;
   interestRepaymentFrequency: 'weekly' | 'monthly' | 'annually';
+  awards?: string[];
+  promotions?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -65,6 +67,8 @@ const InstitutionSchema: Schema = new Schema(
     coreBankingAutoDisburse: { type: Boolean, default: false },
     coreBankingAuthToken: { type: String, default: '' },
     interestRepaymentFrequency: { type: String, enum: ['weekly', 'monthly', 'annually'], default: 'monthly' },
+    awards: { type: [String], default: [] },
+    promotions: { type: [String], default: [] },
   },
   { timestamps: true }
 );

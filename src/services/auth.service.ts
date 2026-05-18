@@ -94,6 +94,17 @@ export const authService = {
       return { success: false, message: 'Invalid credentials' };
     }
 
+    // Enforce partner account verification check
+    if (['BankAdmin', 'BNPLAdmin', 'InsuranceAdmin'].includes(user.role) && user.institutionId) {
+      const inst = await Institution.findById(user.institutionId);
+      if (inst && !inst.isVerified) {
+        return { 
+          success: false, 
+          message: 'Your partner account is pending underwriting review. Resolve super-administrators have been notified and will verify your corporate credentials shortly.' 
+        };
+      }
+    }
+
     const accessToken = jwt.sign(
       { 
         id: user._id.toString(), 
