@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from '../models/user.model';
+import Institution from '../models/institution.model';
 import { storageService } from './storage.service';
 import UserDocument from '../models/document.model';
 
@@ -18,6 +19,28 @@ export const authService = {
 
     if (existingUser) {
       return { success: false, message: 'User with this email or phone number already exists' };
+    }
+
+    // Check if registering a partner role and create Institution first
+    if (['BankAdmin', 'BNPLAdmin', 'InsuranceAdmin'].includes(userData.role)) {
+      const instType = userData.role === 'BankAdmin' ? 'Bank' : userData.role === 'BNPLAdmin' ? 'Merchant' : 'Insurance';
+      const inst = await Institution.create({
+        name: userData.legalName || 'New Institution Partner',
+        legalName: userData.legalName || 'New Institution Partner',
+        type: instType,
+        registrationNumber: userData.registrationNumber || 'PENDING',
+        taxId: userData.taxId || 'PENDING',
+        email: userData.email,
+        phoneNumber: userData.phoneNumber,
+        website: userData.website || '',
+        streetAddress: userData.streetAddress || 'PENDING',
+        city: userData.city || 'PENDING',
+        state: userData.city || 'PENDING',
+        country: userData.country || 'Ghana',
+        isActive: true,
+        isVerified: false
+      });
+      userData.institutionId = inst._id;
     }
 
     const hashedPassword = await bcrypt.hash(userData.password, 10);
