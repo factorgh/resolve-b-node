@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import mongoose, { Schema, Document } from "mongoose";
 
 export interface IFinancialProduct extends Document {
   name: string;
@@ -17,6 +17,9 @@ export interface IFinancialProduct extends Document {
   isFeatured: boolean;
   displayOrder: number;
   imageUrl?: string;
+  isBlacklisted: boolean;
+  blacklistReason?: string;
+  blacklistedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -26,7 +29,11 @@ const FinancialProductSchema: Schema = new Schema(
     name: { type: String, required: true },
     description: { type: String, required: true },
     productType: { type: String, required: true },
-    institutionId: { type: Schema.Types.ObjectId, ref: 'Institution', required: true },
+    institutionId: {
+      type: Schema.Types.ObjectId,
+      ref: "Institution",
+      required: true,
+    },
     minAmount: { type: Number, required: true },
     maxAmount: { type: Number, required: true },
     interestRate: { type: Number, required: true },
@@ -38,9 +45,15 @@ const FinancialProductSchema: Schema = new Schema(
     isActive: { type: Boolean, default: true },
     isFeatured: { type: Boolean, default: false },
     displayOrder: { type: Number, default: 0 },
-    imageUrl: { type: String, default: '' },
+    imageUrl: { type: String, default: "" },
+    isBlacklisted: { type: Boolean, default: false },
+    blacklistReason: { type: String, default: "" },
+    blacklistedAt: { type: Date },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-export default mongoose.model<IFinancialProduct>('FinancialProduct', FinancialProductSchema);
+export default mongoose.model<IFinancialProduct>(
+  "FinancialProduct",
+  FinancialProductSchema,
+);

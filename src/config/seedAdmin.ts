@@ -137,6 +137,27 @@ async function seedDatabase() {
       console.log('ℹ️ SuperAdmin Account already exists.');
     }
 
+    // 1b. Operational Platform Admin (Handles Daily Activities & Verifications)
+    let platformAdmin = await User.findOne({ email: 'admin@resolvebridge.com' });
+    if (!platformAdmin) {
+      platformAdmin = await User.create({
+        email: 'admin@resolvebridge.com',
+        phoneNumber: '+233000000000',
+        firstName: 'Platform',
+        lastName: 'Operations Manager',
+        password: hashed,
+        market: 'Ghana',
+        role: 'Admin',
+        kycStatus: 'Verified',
+        isActive: true,
+        emailVerified: true,
+        phoneVerified: true
+      });
+      console.log('✅ Seeded Operational Admin Account (admin@resolvebridge.com).');
+    } else {
+      console.log('ℹ️ Operational Admin Account already exists.');
+    }
+
     // 2. InstitutionAdmin (GCB Bank Desk)
     let bankAdmin = await User.findOne({ email: 'bankadmin@resolvebridge.com' });
     if (!bankAdmin) {
@@ -285,10 +306,11 @@ async function seedDatabase() {
     console.log('--------------------------------------------------');
     console.log('Standard Credentials seeded to database:');
     console.log('Password for all users: ' + commonPassword);
-    console.log('1. SuperAdmin: superadmin@resolvebridge.com');
-    console.log('2. BankAdmin: bankadmin@resolvebridge.com');
-    console.log('3. InsuranceAdmin: insuranceadmin@resolvebridge.com');
-    console.log('4. BNPLAdmin: bnpladmin@resolvebridge.com');
+    console.log('1. SuperAdmin: superadmin@resolvebridge.com (Full Platform Director)');
+    console.log('2. Platform Admin: admin@resolvebridge.com (Operational Activities & Verifications)');
+    console.log('3. BankAdmin: bankadmin@resolvebridge.com');
+    console.log('4. InsuranceAdmin: insuranceadmin@resolvebridge.com');
+    console.log('5. BNPLAdmin: bnpladmin@resolvebridge.com');
     console.log('--------------------------------------------------');
 
   } catch (error: any) {

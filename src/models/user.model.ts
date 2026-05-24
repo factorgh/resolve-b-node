@@ -17,6 +17,7 @@ export interface IUser extends Document {
   phoneVerified: boolean;
   lastLoginAt?: Date;
   institutionId?: mongoose.Types.ObjectId;
+  regionId?: mongoose.Types.ObjectId;
   // Profile fields
   title?: string;
   maritalStatus?: string;
@@ -62,6 +63,7 @@ const UserSchema: Schema = new Schema(
     phoneVerified: { type: Boolean, default: false },
     lastLoginAt: { type: Date },
     institutionId: { type: Schema.Types.ObjectId, ref: 'Institution' },
+    regionId: { type: Schema.Types.ObjectId, ref: 'Region' },
     // Profile fields
     title: { type: String },
     maritalStatus: { type: String },

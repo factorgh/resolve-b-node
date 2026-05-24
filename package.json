@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test:webhook": "ts-node scripts/paystackWebhookSimulator.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +17,7 @@
     "@aws-sdk/client-s3": "^3.1048.0",
     "@aws-sdk/lib-storage": "^3.1048.0",
     "@aws-sdk/s3-request-presigner": "^3.1048.0",
+    "axios": "^1.7.2",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",

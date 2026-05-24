@@ -11,12 +11,12 @@ export const newsController = {
       const mappedArticles = articles.map(art => ({
         id: art._id,
         title: art.title,
-        content: art.content,
-        summary: art.content.substring(0, 100) + '...',
+        content: art.content || '',
+        summary: (art.content || '').substring(0, 100) + '...',
         tag: art.category,
         icon: '📰', // Default icon
         imageUrl: art.imageUrl,
-        readingTimeMinutes: Math.ceil(art.content.split(' ').length / 200),
+        readingTimeMinutes: Math.ceil((art.content || '').split(' ').length / 200),
         publishedAt: art.publishedAt
       }));
 

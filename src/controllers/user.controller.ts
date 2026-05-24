@@ -115,7 +115,7 @@ export const userController = {
   adminUpdateUser: async (req: any, res: Response) => {
     try {
       const { id } = req.params;
-      const { role, isActive, kycStatus } = req.body;
+      const { role, isActive, kycStatus, regionId } = req.body;
 
       const user = await User.findById(id);
       if (!user) {
@@ -125,6 +125,7 @@ export const userController = {
       if (role !== undefined) user.role = role;
       if (isActive !== undefined) user.isActive = isActive;
       if (kycStatus !== undefined) user.kycStatus = kycStatus;
+      if (regionId !== undefined) user.regionId = regionId || undefined;
 
       await user.save();
 
