@@ -8,14 +8,21 @@ export const productController = {
     try {
       const { type } = req.query;
       const query: any = { isActive: true, isBlacklisted: false };
-      if (type) query.productType = type;
+      if (type) query.productType = { $regex: new RegExp(`^${type}$`, 'i') };
 
       const products = await FinancialProduct.find(query).populate(
         "institutionId",
-        "name logoUrl",
+        "name logoUrl isActive isVerified",
       );
+
+      // Filter out products from inactive / revoked institutions
+      const activeProducts = products.filter((p) => {
+        const inst = p.institutionId as any;
+        return inst?.isActive !== false && inst?.isVerified === true;
+      });
+
       return res.json(
-        responseFactory.success(products, "Products fetched successfully"),
+        responseFactory.success(activeProducts, "Products fetched successfully"),
       );
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
@@ -56,7 +63,7 @@ export const productController = {
       const query: any = { isBlacklisted: false };
 
       if (productType && productType !== "all") {
-        query.category = productType;
+        query.productType = { $regex: new RegExp(`^${productType}$`, 'i') };
       }
 
       if (searchTerm) {
@@ -80,11 +87,17 @@ export const productController = {
       // Mongoose models use camelCase.
       const products = await FinancialProduct.find(query).populate(
         "institutionId",
-        "name logoUrl",
+        "name logoUrl isActive isVerified",
       );
 
+      // Filter out products from inactive / revoked institutions
+      const activeProducts = products.filter((p) => {
+        const inst = p.institutionId as any;
+        return inst?.isActive !== false && inst?.isVerified === true;
+      });
+
       // Map to frontend expectations
-      const mappedProducts = products.map((p) => {
+      const mappedProducts = activeProducts.map((p) => {
         const institution = p.institutionId as any;
         return {
           id: p._id,
@@ -115,9 +128,19 @@ export const productController = {
       const products = await FinancialProduct.find({
         isFeatured: true,
         isBlacklisted: false,
-      }).limit(5);
+      }).populate(
+        "institutionId",
+        "name logoUrl isActive isVerified",
+      );
+
+      // Filter out products from inactive / revoked institutions
+      const activeProducts = products.filter((p) => {
+        const inst = p.institutionId as any;
+        return inst?.isActive !== false && inst?.isVerified === true;
+      }).slice(0, 5);
+
       return res.json(
-        responseFactory.success(products, "Recommendations fetched"),
+        responseFactory.success(activeProducts, "Recommendations fetched"),
       );
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));

@@ -5,7 +5,7 @@ import Institution from '../models/institution.model';
 export const institutionController = {
   getAll: async (req: Request, res: Response) => {
     try {
-      const institutions = await Institution.find({ isActive: true });
+      const institutions = await Institution.find({ isActive: true, isVerified: true });
       return res.json(responseFactory.success(institutions, 'Institutions fetched successfully'));
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));

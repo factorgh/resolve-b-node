@@ -27,4 +27,17 @@ router.patch(
   userController.adminUpdateUser
 );
 
+router.patch(
+  '/:id/score',
+  authMiddleware,
+  requireRole(['Admin', 'SuperAdmin', 'InstitutionAdmin']),
+  userController.calculateCreditScore
+);
+
+router.post(
+  '/pay-subscription',
+  authMiddleware,
+  userController.paySubscription
+);
+
 export default router;

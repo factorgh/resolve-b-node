@@ -2,6 +2,8 @@ import axios, { AxiosError } from "axios";
 import crypto from "crypto";
 import PaymentTransaction from "../models/paymentTransaction.model";
 import FinancialProduct from "../models/product.model";
+import User from "../models/user.model";
+import Transaction from "../models/transaction.model";
 import { auditLogger } from "../utils/auditLogger";
 
 const PAYSTACK_API_BASE = "https://api.paystack.co";
@@ -165,6 +167,11 @@ export const paystackService = {
 
       await transaction.save();
 
+      // Trigger subscription activation if success
+      if (transaction.status === "success") {
+        await this.activateSubscription(transaction);
+      }
+
       return {
         success: paymentData.status === "success",
         status: paymentData.status,
@@ -248,7 +255,9 @@ export const paystackService = {
 
       await transaction.save();
 
-      // TODO: Trigger downstream processes (subscription update, product access, etc.)
+      // Trigger subscription activation
+      await this.activateSubscription(transaction);
+
       console.log(`Payment successful: ${reference}`);
 
       return { handled: true, reference, amount };
@@ -365,6 +374,60 @@ export const paystackService = {
     } catch (error: any) {
       console.error("Get transaction error:", error.message);
       throw new Error(`Failed to get transaction: ${error.message}`);
+    }
+  },
+
+  /**
+   * Activate customer platform subscription upon successful payment
+   */
+  async activateSubscription(transaction: any) {
+    try {
+      if (transaction.status !== "success") return;
+
+      const isSubscription =
+        transaction.metadata?.isSubscription ||
+        transaction.description?.toLowerCase().includes("subscription");
+      if (!isSubscription) return;
+
+      // Verify if a ledger transaction for this reference already exists to prevent duplicate actions
+      const ledgerRef = `SUB-PAYSTACK-${transaction.reference}`;
+      const existingLedger = await Transaction.findOne({ reference: ledgerRef });
+      if (existingLedger) {
+        console.log(`[SubscriptionBilling] Ledger entry ${ledgerRef} already exists.`);
+        return;
+      }
+
+      const user = await User.findById(transaction.userId);
+      if (user) {
+        // Update user platform metrics
+        user.subscriptionFeePaid = true;
+        user.nextSubscriptionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        await user.save();
+
+        // Create standard ledger record
+        await Transaction.create({
+          userId: transaction.userId,
+          description: transaction.description || "Platform Access Fee Settlement via Paystack",
+          amount: transaction.amount,
+          type: "debit",
+          category: "Subscription",
+          status: "Completed",
+          reference: ledgerRef,
+          date: new Date(),
+        });
+
+        await auditLogger.log({
+          adminId: user._id.toString(),
+          action: "PAYMENT_VERIFIED",
+          details: `Settled monthly platform subscription of GH₵ ${transaction.amount} via Paystack. Reference: ${transaction.reference}`,
+        });
+
+        console.log(`[SubscriptionBilling] Successfully activated platform subscription for user ${user._id}`);
+      } else {
+        console.warn(`[SubscriptionBilling] User not found for ID ${transaction.userId}`);
+      }
+    } catch (error: any) {
+      console.error("[SubscriptionBilling] Error activating subscription:", error.message);
     }
   },
 };

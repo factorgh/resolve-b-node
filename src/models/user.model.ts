@@ -41,6 +41,13 @@ export interface IUser extends Document {
   loanDuration?: string;
   idType?: string;
   idNumber?: string;
+  creditScore?: number;
+  healthIndex?: number;
+  cashFlow?: number;
+  netWorth?: number;
+  healthIndexMessage?: string;
+  subscriptionFeePaid?: boolean;
+  nextSubscriptionDate?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -87,6 +94,13 @@ const UserSchema: Schema = new Schema(
     loanDuration: { type: String },
     idType: { type: String },
     idNumber: { type: String },
+    creditScore: { type: Number, default: 650 },
+    healthIndex: { type: Number, default: 60 },
+    cashFlow: { type: Number, default: 5000 },
+    netWorth: { type: Number, default: 15000 },
+    healthIndexMessage: { type: String, default: 'Assessment Pending' },
+    subscriptionFeePaid: { type: Boolean, default: true },
+    nextSubscriptionDate: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
   },
   { timestamps: true }
 );
