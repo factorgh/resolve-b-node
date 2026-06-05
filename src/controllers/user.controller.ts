@@ -4,11 +4,47 @@ import User from '../models/user.model';
 import Transaction from '../models/transaction.model';
 import { auditLogger } from '../utils/auditLogger';
 import { paystackService } from '../services/paystack.service';
+import bcrypt from 'bcryptjs';
+import Application from '../models/application.model';
+import FinancialProduct from '../models/product.model';
 
 export const userController = {
-  getAllUsers: async (req: Request, res: Response) => {
+  getAllUsers: async (req: any, res: Response) => {
     try {
-      const users = await User.find({}, 'id email firstName lastName role isActive');
+      const { role, institutionId } = req.user;
+      let query: any = {};
+
+      // Multi-tenant check: if B2B partner (not SuperAdmin/Admin), restrict to users who have applied for their products
+      if (role !== 'SuperAdmin' && role !== 'Admin') {
+        if (!institutionId) {
+          return res.json(responseFactory.success([], 'Users fetched successfully'));
+        }
+        
+        // Find all products for this institution
+        const products = await FinancialProduct.find({ institutionId });
+        const productIds = products.map(p => p._id);
+        
+        // Find all applications for these products
+        const applications = await Application.find({ productId: { $in: productIds } });
+        const userIds = applications.map(app => app.userId);
+        
+        query._id = { $in: userIds };
+      }
+
+      // Add search query Support
+      if (req.query.q) {
+        const searchVal = String(req.query.q).trim();
+        if (searchVal) {
+          const searchRegex = { $regex: searchVal, $options: 'i' };
+          query.$or = [
+            { firstName: searchRegex },
+            { lastName: searchRegex },
+            { email: searchRegex }
+          ];
+        }
+      }
+
+      const users = await User.find(query, 'id email firstName lastName role isActive');
       return res.json(responseFactory.success(users, 'Users fetched successfully'));
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
@@ -308,6 +344,214 @@ export const userController = {
     } catch (error: any) {
       console.error("[SubscriptionBilling] Paystack checkout initiation error:", error.message);
       return res.status(500).json(responseFactory.error(error.message || 'Failed to initialize subscription checkout'));
+    }
+  },
+
+  /**
+   * Onboard a new staff user for a B2B Partner Institution
+   * POST /api/v1/users/b2b/staff
+   */
+  b2bOnboardStaff: async (req: any, res: Response) => {
+    try {
+      const { role: adminRole, institutionId } = req.user;
+      const { email, phoneNumber, firstName, lastName, password, role: delegateRole, permissions } = req.body;
+
+      // 1. Strict Role Authorization check
+      const b2bAdminRoles = ['InstitutionAdmin', 'InsuranceAdmin', 'BNPLAdmin'];
+      if (!b2bAdminRoles.includes(adminRole)) {
+        return res.status(403).json(responseFactory.error('Forbidden: Access denied to staff onboarding'));
+      }
+
+      if (!institutionId) {
+        return res.status(400).json(responseFactory.error('Partner desk must have an associated institution profile'));
+      }
+
+      // 2. Validate Inputs
+      if (!email || !phoneNumber || !firstName || !lastName || !password || !delegateRole) {
+        return res.status(400).json(responseFactory.error('All fields (email, phoneNumber, firstName, lastName, password, role) are required'));
+      }
+
+      // 3. Strict Delegation Role Enforcement
+      const expectedRoleMap: Record<string, string> = {
+        'InstitutionAdmin': 'InstitutionStaff',
+        'InsuranceAdmin': 'InsuranceStaff',
+        'BNPLAdmin': 'BNPLStaff'
+      };
+
+      const expectedRole = expectedRoleMap[adminRole];
+      if (delegateRole !== expectedRole) {
+        return res.status(400).json(responseFactory.error(`Forbidden: A partner admin of type ${adminRole} can only onboard staff with the role ${expectedRole}`));
+      }
+
+      // 4. Duplicate Check
+      const existingEmail = await User.findOne({ email });
+      if (existingEmail) {
+        return res.status(400).json(responseFactory.error('This email is already associated with another account'));
+      }
+
+      const existingPhone = await User.findOne({ phoneNumber });
+      if (existingPhone) {
+        return res.status(400).json(responseFactory.error('This phone number is already registered'));
+      }
+
+      // 5. Hash Password & Onboard Staff User (Set mustResetPassword to true)
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const newStaff = await User.create({
+        email,
+        phoneNumber,
+        firstName,
+        lastName,
+        password: hashedPassword,
+        role: delegateRole,
+        institutionId,
+        permissions: permissions || [],
+        kycStatus: 'Verified', // Pre-verified by partner admins
+        isActive: true,
+        mustResetPassword: true, // Enforce reset upon first login
+      });
+
+      // 6. Log onboarding in audit ledger
+      await auditLogger.log({
+        adminId: req.user.id,
+        institutionId,
+        action: 'OnboardStaff',
+        targetId: newStaff._id as any,
+        details: `Onboarded new corporate staff member ${firstName} ${lastName} (${email}) with role ${delegateRole} under institution ${institutionId}.`,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent']
+      });
+
+      console.log(`[B2B-StaffOnboarding] Success: Onboarded ${email} for institution ${institutionId}`);
+      
+      const responsePayload = newStaff.toObject();
+      delete (responsePayload as any).password;
+
+      return res.status(201).json(responseFactory.success(responsePayload, 'Corporate staff member onboarded successfully'));
+    } catch (error: any) {
+      console.error('[B2B-StaffOnboarding] Error:', error.message);
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  /**
+   * List all staff users onboarded for the partner institution
+   * GET /api/v1/users/b2b/staff
+   */
+  b2bGetStaff: async (req: any, res: Response) => {
+    try {
+      const { role: adminRole, institutionId } = req.user;
+
+      const b2bAdminRoles = ['InstitutionAdmin', 'InsuranceAdmin', 'BNPLAdmin'];
+      if (!b2bAdminRoles.includes(adminRole)) {
+        return res.status(403).json(responseFactory.error('Forbidden: Access denied'));
+      }
+
+      if (!institutionId) {
+        return res.status(400).json(responseFactory.error('Partner desk must have an associated institution profile'));
+      }
+
+      const staffMembers = await User.find(
+        { institutionId, _id: { $ne: req.user.id } },
+        'id email phoneNumber firstName lastName role isActive mustResetPassword createdAt permissions'
+      ).sort({ createdAt: -1 });
+
+      return res.json(responseFactory.success(staffMembers, 'Staff directory retrieved successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  /**
+   * Deboard/Delete a staff user
+   * DELETE /api/v1/users/b2b/staff/:id
+   */
+  b2bDeboardStaff: async (req: any, res: Response) => {
+    try {
+      const { role: adminRole, institutionId } = req.user;
+      const { id } = req.params;
+
+      const b2bAdminRoles = ['InstitutionAdmin', 'InsuranceAdmin', 'BNPLAdmin'];
+      if (!b2bAdminRoles.includes(adminRole)) {
+        return res.status(403).json(responseFactory.error('Forbidden: Access denied'));
+      }
+
+      if (!institutionId) {
+        return res.status(400).json(responseFactory.error('Partner desk must have an associated institution profile'));
+      }
+
+      // Verify the targeted staff member exists and belongs to the same institution (Multi-tenancy isolation guard)
+      const staffMember = await User.findOne({ _id: id, institutionId });
+      if (!staffMember) {
+        return res.status(404).json(responseFactory.notFound('Staff member not found or does not belong to your company'));
+      }
+
+      // Remove the staff member
+      await staffMember.deleteOne();
+
+      // Log action to compliance audit ledger
+      await auditLogger.log({
+        adminId: req.user.id,
+        institutionId,
+        action: 'DeboardStaff',
+        targetId: id as any,
+        details: `Deboarded and deleted staff user account ${staffMember.firstName} ${staffMember.lastName} (${staffMember.email}) from institution ${institutionId}.`,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent']
+      });
+
+      console.log(`[B2B-StaffDeboarding] Success: Deboarded ${staffMember.email} for institution ${institutionId}`);
+      return res.json(responseFactory.success(null, 'Staff member deboarded and account deleted successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  /**
+   * Update permissions for a corporate staff user
+   * PATCH /api/v1/users/b2b/staff/:id/permissions
+   */
+  b2bUpdateStaffPermissions: async (req: any, res: Response) => {
+    try {
+      const { role: adminRole, institutionId } = req.user;
+      const { id } = req.params;
+      const { permissions } = req.body;
+
+      const b2bAdminRoles = ['InstitutionAdmin', 'InsuranceAdmin', 'BNPLAdmin'];
+      if (!b2bAdminRoles.includes(adminRole)) {
+        return res.status(403).json(responseFactory.error('Forbidden: Access denied'));
+      }
+
+      if (!institutionId) {
+        return res.status(400).json(responseFactory.error('Partner desk must have an associated institution profile'));
+      }
+
+      if (!Array.isArray(permissions)) {
+        return res.status(400).json(responseFactory.error('Permissions must be an array of strings'));
+      }
+
+      // Verify the targeted staff member exists and belongs to the same institution (Multi-tenancy isolation guard)
+      const staffMember = await User.findOne({ _id: id, institutionId });
+      if (!staffMember) {
+        return res.status(404).json(responseFactory.notFound('Staff member not found or does not belong to your company'));
+      }
+
+      staffMember.permissions = permissions;
+      await staffMember.save();
+
+      // Log permissions update in audit ledger
+      await auditLogger.log({
+        adminId: req.user.id,
+        institutionId,
+        action: 'UpdateStaffPermissions',
+        targetId: staffMember._id as any,
+        details: `Updated permissions for staff member ${staffMember.firstName} ${staffMember.lastName} (${staffMember.email}) to [${permissions.join(', ')}].`,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent']
+      });
+
+      return res.json(responseFactory.success(staffMember, 'Staff permissions updated successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
     }
   }
 };

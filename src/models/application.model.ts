@@ -13,6 +13,11 @@ export interface IApplication extends Document {
   approvedAt?: Date;
   rejectedAt?: Date;
   rejectionReason?: string;
+  isConnectionCharged: boolean;
+  flaggedForReminder: boolean;
+  reminderSentCount: number;
+  lastReminderSentAt?: Date;
+  assignedTo?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,6 +36,11 @@ const ApplicationSchema: Schema = new Schema(
     approvedAt: { type: Date },
     rejectedAt: { type: Date },
     rejectionReason: { type: String },
+    isConnectionCharged: { type: Boolean, default: false },
+    flaggedForReminder: { type: Boolean, default: false },
+    reminderSentCount: { type: Number, default: 0 },
+    lastReminderSentAt: { type: Date },
+    assignedTo: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );

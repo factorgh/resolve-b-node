@@ -2,6 +2,7 @@ import { Router } from "express";
 import { billingController } from "../controllers/billing.controller";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { requireRole } from "../middlewares/role.middleware";
+import { requirePermission } from "../middlewares/permission.middleware";
 
 const router = Router();
 
@@ -13,12 +14,16 @@ const allowedRoles = [
   "BNPLAdmin",
   "Insurance",
   "BNPL",
+  "InstitutionStaff",
+  "InsuranceStaff",
+  "BNPLStaff",
 ];
 
 router.get(
   "/invoices",
   authMiddleware,
   requireRole(allowedRoles),
+  requirePermission("billing"),
   billingController.getInvoices,
 );
 
@@ -47,7 +52,16 @@ router.post(
   "/invoices/:id/pay",
   authMiddleware,
   requireRole(allowedRoles),
+  requirePermission("billing"),
   billingController.payInvoice,
+);
+
+router.post(
+  "/invoices/:id/initialize-payment",
+  authMiddleware,
+  requireRole(allowedRoles),
+  requirePermission("billing"),
+  billingController.initializeInvoicePayment,
 );
 
 router.get(

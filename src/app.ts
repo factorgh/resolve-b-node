@@ -21,6 +21,7 @@ import notificationRoutes from "./routes/notification.routes";
 import regionRoutes from "./routes/region.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import chatRoutes from "./routes/chat.routes";
+import subscriptionRoutes from "./routes/subscription.routes";
 
 const app = express();
 
@@ -45,11 +46,23 @@ app.use("/api/v1/Notifications", notificationRoutes);
 app.use("/api/v1/Payments", paymentRoutes);
 app.use("/api/v1/Regions", regionRoutes);
 app.use("/api/v1/Chat", chatRoutes);
+app.use("/api/v1/Subscriptions", subscriptionRoutes);
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "ResolveBridge Node Backend",
     timestamp: new Date().toISOString(),
+  });
+});
+
+// Secure Global Error Handling Middleware to prevent unhandled fault leakage to B2B partners
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error("[UnhandledException] Detailed System Error:", err);
+
+  res.status(500).json({
+    success: false,
+    message: "An unexpected internal server error occurred. Please contact system support.",
+    statusCode: 500
   });
 });
 

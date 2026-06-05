@@ -85,23 +85,18 @@ export const paymentController = {
         });
       }
 
-      return res
-        .status(200)
-        .json(
-          responseFactory.success(
-            result,
-            result.success
-              ? "Payment verified successfully"
-              : "Payment verification failed",
-          ),
-        );
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+      const redirectUrl = reference.toString().includes("SUB")
+        ? `${clientUrl}/portal/billing?payment=${result.success ? "success" : "failed"}&reference=${reference}`
+        : reference.toString().includes("INV")
+          ? `${clientUrl}/admin/billing?payment=${result.success ? "success" : "failed"}&reference=${reference}`
+          : `${clientUrl}/portal/marketplace?payment=${result.success ? "success" : "failed"}&reference=${reference}`;
+
+      return res.redirect(redirectUrl);
     } catch (error: any) {
       console.error("Payment callback error:", error.message);
-      return res
-        .status(500)
-        .json(
-          responseFactory.error(error.message || "Failed to verify payment"),
-        );
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+      return res.redirect(`${clientUrl}/portal?payment=error&message=${encodeURIComponent(error.message)}`);
     }
   },
 

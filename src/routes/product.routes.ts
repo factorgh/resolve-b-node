@@ -2,6 +2,7 @@ import { Router } from "express";
 import { productController } from "../controllers/product.controller";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { requireRole } from "../middlewares/role.middleware";
+import { requirePermission } from "../middlewares/permission.middleware";
 
 const router = Router();
 
@@ -31,8 +32,23 @@ router.patch(
   productController.restoreProduct,
 );
 router.get("/:id", productController.getById);
-router.post("/", authMiddleware, productController.create);
-router.patch("/:id", authMiddleware, productController.update);
-router.delete("/:id", authMiddleware, productController.delete);
+router.post(
+  "/",
+  authMiddleware,
+  requirePermission("products"),
+  productController.create,
+);
+router.patch(
+  "/:id",
+  authMiddleware,
+  requirePermission("products"),
+  productController.update,
+);
+router.delete(
+  "/:id",
+  authMiddleware,
+  requirePermission("products"),
+  productController.delete,
+);
 
 export default router;

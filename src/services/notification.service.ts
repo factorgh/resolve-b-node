@@ -119,6 +119,37 @@ export const notificationService = {
   },
 
   sendSmsNotification: async (phone: string, message: string) => {
+    const mNotifyKey = process.env.MNOTIFY || "";
+    if (mNotifyKey) {
+      try {
+        const senderId = process.env.MNOTIFY_SENDER_ID || "ResBridge";
+        const formattedPhone = phone.replace(/[^\d+]/g, '').replace(/^\+/, '');
+        let finalPhone = formattedPhone;
+        if (formattedPhone.startsWith('0') && formattedPhone.length === 10) {
+          finalPhone = '233' + formattedPhone.substring(1);
+        }
+
+        const response = await axios.post(
+          `https://api.mnotify.com/api/sms/quick?key=${mNotifyKey}`,
+          {
+            recipient: [finalPhone],
+            sender_id: senderId,
+            message: message,
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        console.log(`mNotify SMS response for ${finalPhone}:`, response.data);
+        return response.data;
+      } catch (error: any) {
+        console.warn("Failed to send mNotify SMS notification", error.response?.data || error.message);
+        return null;
+      }
+    }
+
     if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_FROM_NUMBER) {
       console.log(`SMS notification stub: ${phone} | ${message}`);
       return null;

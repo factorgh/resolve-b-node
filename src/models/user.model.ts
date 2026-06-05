@@ -48,6 +48,12 @@ export interface IUser extends Document {
   healthIndexMessage?: string;
   subscriptionFeePaid?: boolean;
   nextSubscriptionDate?: Date;
+  // Premium subscription fields
+  subscriptionPlanId?: mongoose.Types.ObjectId;
+  subscriptionStartDate?: Date;
+  subscriptionEndDate?: Date;
+  mustResetPassword: boolean;
+  permissions?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -64,6 +70,7 @@ const UserSchema: Schema = new Schema(
     nationalId: { type: String },
     market: { type: String, default: 'Ghana' },
     role: { type: String, default: 'Customer' },
+    permissions: { type: [String], default: [] },
     kycStatus: { type: String, default: 'Pending' },
     isActive: { type: Boolean, default: true },
     emailVerified: { type: Boolean, default: false },
@@ -101,6 +108,11 @@ const UserSchema: Schema = new Schema(
     healthIndexMessage: { type: String, default: 'Assessment Pending' },
     subscriptionFeePaid: { type: Boolean, default: true },
     nextSubscriptionDate: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+    // Premium subscription fields
+    subscriptionPlanId: { type: Schema.Types.ObjectId, ref: 'SubscriptionPlan' },
+    subscriptionStartDate: { type: Date },
+    subscriptionEndDate: { type: Date },
+    mustResetPassword: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

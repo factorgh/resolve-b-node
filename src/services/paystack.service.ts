@@ -4,7 +4,11 @@ import PaymentTransaction from "../models/paymentTransaction.model";
 import FinancialProduct from "../models/product.model";
 import User from "../models/user.model";
 import Transaction from "../models/transaction.model";
+import Institution from "../models/institution.model";
 import { auditLogger } from "../utils/auditLogger";
+import Application from "../models/application.model";
+import BillingInvoice from "../models/billing.model";
+import { notificationService } from "./notification.service";
 
 const PAYSTACK_API_BASE = "https://api.paystack.co";
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
@@ -20,6 +24,7 @@ interface InitiatePaymentPayload {
   description?: string;
   metadata?: Record<string, any>;
   callbackUrl?: string;
+  isRetry?: boolean;
 }
 
 interface PaystackResponse {
@@ -44,13 +49,14 @@ export const paystackService = {
         description,
         metadata,
         callbackUrl,
+        isRetry,
       } = payload;
 
       // Validate idempotency: check if reference already exists
       const existingTransaction = await PaymentTransaction.findOne({
         reference,
       });
-      if (existingTransaction) {
+      if (existingTransaction && !isRetry) {
         throw new Error(`Payment reference ${reference} already exists`);
       }
 
@@ -89,23 +95,32 @@ export const paystackService = {
 
       const { access_code, authorization_url } = response.data.data;
 
-      // Store transaction in database
-      const transaction = new PaymentTransaction({
-        userId,
-        productId,
-        applicationId,
-        reference,
-        amount: amount / 100, // Convert back to GHS
-        currency: "GHS",
-        status: "pending",
-        authorizationUrl: authorization_url,
-        accessCode: access_code,
-        description,
-        metadata,
-        providerResponse: response.data.data,
-        customerEmail: email,
-        retryCount: 0,
-      });
+      let transaction;
+      if (isRetry && existingTransaction) {
+        transaction = existingTransaction;
+        transaction.authorizationUrl = authorization_url;
+        transaction.accessCode = access_code;
+        transaction.status = "pending";
+        transaction.providerResponse = response.data.data;
+      } else {
+        // Store transaction in database
+        transaction = new PaymentTransaction({
+          userId,
+          productId,
+          applicationId,
+          reference,
+          amount: amount / 100, // Convert back to GHS
+          currency: "GHS",
+          status: "pending",
+          authorizationUrl: authorization_url,
+          accessCode: access_code,
+          description,
+          metadata,
+          providerResponse: response.data.data,
+          customerEmail: email,
+          retryCount: 0,
+        });
+      }
 
       await transaction.save();
 
@@ -255,6 +270,124 @@ export const paystackService = {
 
       await transaction.save();
 
+      // Save Paystack authorization code for recurring partner billing if institutionId is in metadata
+      const institutionId = transaction.metadata?.institutionId || transaction.metadata?.customData?.institutionId;
+      const authorizationCode = data.authorization?.authorization_code;
+      if (institutionId && authorizationCode) {
+        const inst = await Institution.findById(institutionId);
+        if (inst) {
+          inst.paystackAuthorizationCode = authorizationCode;
+          await inst.save();
+          console.log(`[PaystackService] Saved recurring payment token for institution ${inst.name}`);
+        }
+      }
+
+      // Handle client connection fee payment activation
+      const isClientConnectionFee = 
+        transaction.metadata?.isClientConnectionFee || 
+        transaction.metadata?.customData?.isClientConnectionFee ||
+        data.metadata?.customData?.isClientConnectionFee;
+
+      if (isClientConnectionFee) {
+        const appId = 
+          transaction.applicationId || 
+          transaction.metadata?.applicationId || 
+          transaction.metadata?.customData?.applicationId ||
+          data.metadata?.applicationId ||
+          data.metadata?.customData?.applicationId;
+
+        if (appId) {
+          const application = await Application.findById(appId);
+          if (application) {
+            application.status = "Pending";
+            await application.save();
+
+            // Log client connection fee payment settlement in the compliance audit ledger
+            await auditLogger.log({
+              adminId: transaction.userId.toString(),
+              action: "PAYMENT_VERIFIED",
+              targetId: application._id as any,
+              details: `Settled client connection fee of GH₵ ${transaction.amount} via Paystack. Reference: ${transaction.reference}. Application ${application._id} is now set to "Pending" and formally submitted to the partner review desk.`,
+            });
+
+            // Create standard ledger record
+            const ledgerRef = `CONN-PAYSTACK-${transaction.reference}`;
+            const existingLedger = await Transaction.findOne({ reference: ledgerRef });
+            if (!existingLedger) {
+              await Transaction.create({
+                userId: transaction.userId,
+                applicationId: application._id,
+                description: transaction.description || `Client Connection Agent Fee Settlement via Paystack`,
+                amount: transaction.amount,
+                type: "debit",
+                category: "ConnectionFee",
+                status: "Completed",
+                reference: ledgerRef,
+                date: new Date(),
+              });
+            }
+
+            // Notify user of successful submission
+            const user = await User.findById(transaction.userId);
+            if (user?._id) {
+              await notificationService.notifyUser({
+                userId: user._id.toString(),
+                type: "ApplicationReview",
+                title: "Application Submitted",
+                message: `Your client connection fee payment has been verified. Your application ${application._id.toString().slice(-8)} is now Pending review.`,
+                email: true,
+                sms: true,
+              });
+            }
+
+            console.log(`[PaystackService] Successfully activated application ${application._id} following connection fee payment.`);
+          } else {
+            console.warn(`[PaystackService] Application ${appId} not found for connection fee activation`);
+          }
+        }
+      }
+      // Handle invoice payment activation
+      const isInvoicePayment =
+        transaction.metadata?.isInvoicePayment ||
+        transaction.metadata?.customData?.isInvoicePayment ||
+        data.metadata?.customData?.isInvoicePayment;
+
+      if (isInvoicePayment) {
+        const invoiceId =
+          transaction.metadata?.invoiceId ||
+          transaction.metadata?.customData?.invoiceId ||
+          data.metadata?.invoiceId ||
+          data.metadata?.customData?.invoiceId;
+
+        if (invoiceId) {
+          const invoice = await BillingInvoice.findById(invoiceId);
+          if (invoice && invoice.status !== "Paid") {
+            invoice.status = "Paid";
+            invoice.paidAt = new Date();
+            await invoice.save();
+
+            // Create standard ledger record
+            const ledgerRef = `INV-PAY-${invoice.reference}`;
+            const existingLedger = await Transaction.findOne({ reference: ledgerRef });
+            if (!existingLedger) {
+              await Transaction.create({
+                userId: transaction.userId,
+                institutionId: invoice.institutionId,
+                description: invoice.description || `Platform invoice settlement (${invoice.reference})`,
+                amount: invoice.amount,
+                type: "debit",
+                category: "Subscription",
+                status: "Completed",
+                reference: ledgerRef,
+                date: new Date(),
+              });
+            }
+
+            console.log(`[PaystackService] Successfully settled invoice ${invoice._id} following payment.`);
+          }
+        }
+      }
+
       // Trigger subscription activation
       await this.activateSubscription(transaction);
 
@@ -350,6 +483,7 @@ export const paystackService = {
         description: transaction.description,
         metadata: transaction.metadata,
         callbackUrl,
+        isRetry: true,
       });
 
       return result;
@@ -401,7 +535,12 @@ export const paystackService = {
       if (user) {
         // Update user platform metrics
         user.subscriptionFeePaid = true;
-        user.nextSubscriptionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const currentExpiry = user.nextSubscriptionDate ? new Date(user.nextSubscriptionDate) : null;
+        if (currentExpiry && currentExpiry > new Date()) {
+          user.nextSubscriptionDate = new Date(currentExpiry.getTime() + 30 * 24 * 60 * 60 * 1000);
+        } else {
+          user.nextSubscriptionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        }
         await user.save();
 
         // Create standard ledger record
@@ -428,6 +567,37 @@ export const paystackService = {
       }
     } catch (error: any) {
       console.error("[SubscriptionBilling] Error activating subscription:", error.message);
+    }
+  },
+
+  /**
+   * Charge a tokenized card in the background (recurring/authorization charge)
+   */
+  async chargeAuthorization(email: string, amount: number, authorizationCode: string, reference: string, metadata?: any) {
+    try {
+      const payload = {
+        email,
+        amount, // in kobo
+        authorization_code: authorizationCode,
+        reference,
+        metadata,
+      };
+
+      const response = await axios.post<PaystackResponse>(
+        `${PAYSTACK_API_BASE}/transaction/charge_authorization`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      return response.data;
+    } catch (error: any) {
+      console.error("[PaystackService] Charge authorization error:", error.message);
+      return { status: false, message: error.message };
     }
   },
 };

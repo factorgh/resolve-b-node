@@ -21,6 +21,9 @@ export interface IInstitution extends Document {
   creditLimit?: number;
   currentCreditUsed?: number;
   subscriptionFee: number;
+  connectionFee: number;
+  accumulatedArrears: number;
+  paystackAuthorizationCode?: string;
   billingCycle: 'monthly' | 'annually';
   billingStatus: 'Active' | 'Delinquent' | 'Unpaid';
   nextBillingDate: Date;
@@ -58,6 +61,9 @@ const InstitutionSchema: Schema = new Schema(
     creditLimit: { type: Number },
     currentCreditUsed: { type: Number, default: 0 },
     subscriptionFee: { type: Number, default: 500 }, // Default GH₵ 500 monthly fee
+    connectionFee: { type: Number, default: 50 }, // Default GH₵ 50 per connection
+    accumulatedArrears: { type: Number, default: 0 }, // Unbilled connection fee arrears
+    paystackAuthorizationCode: { type: String, default: '' }, // Paystack recurring payment authorization code
     billingCycle: { type: String, enum: ['monthly', 'annually'], default: 'monthly' },
     billingStatus: { type: String, enum: ['Active', 'Delinquent', 'Unpaid'], default: 'Active' },
     nextBillingDate: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }, // 30 days from now

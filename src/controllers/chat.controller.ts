@@ -1,6 +1,8 @@
 import { Response } from "express";
 import Message from "../models/message.model";
 import User from "../models/user.model";
+import Application from "../models/application.model";
+import FinancialProduct from "../models/product.model";
 import { responseFactory } from "../utils/responseFactory";
 
 export const chatController = {
@@ -20,15 +22,42 @@ export const chatController = {
         return res.status(404).json(responseFactory.notFound("Sender user not found"));
       }
 
-      // Create new message
-      const message = new Message({
+      // Multi-tenant check: B2B partner roles must only message their applicants
+      if (recipientId && !["SuperAdmin", "Admin"].includes(sender.role)) {
+        const recipient = await User.findById(recipientId);
+        if (recipient && recipient.role === "Customer") {
+          if (!sender.institutionId) {
+            return res.status(403).json(responseFactory.error("Forbidden: Access denied to this user"));
+          }
+          const products = await FinancialProduct.find({ institutionId: sender.institutionId });
+          const productIds = products.map(p => p._id);
+          const appExists = await Application.exists({ userId: recipientId, productId: { $in: productIds } });
+          if (!appExists) {
+            return res.status(403).json(responseFactory.error("Forbidden: Access denied to this user"));
+          }
+        }
+      }
+
+      const messagePayload: any = {
         senderId,
         senderName: `${sender.firstName} ${sender.lastName}`.trim(),
         senderRole: sender.role,
-        recipientId: recipientId || undefined,
         text: text.trim(),
         isRead: false
-      });
+      };
+
+      if (recipientId) {
+        messagePayload.recipientId = recipientId;
+      } else if (sender.role === "Customer") {
+        // Assign incoming customer support requests to any available admin/support user
+        const supportUser = await User.findOne({ role: { $in: ["SuperAdmin", "Admin"] } }).sort({ createdAt: 1 });
+        if (supportUser) {
+          messagePayload.recipientId = supportUser._id;
+        }
+      }
+
+      // Create new message
+      const message = new Message(messagePayload);
 
       await message.save();
 
@@ -47,9 +76,22 @@ export const chatController = {
       const currentUserRole = req.user.role;
       
       // If client: fetch their own messages
-      // If admin/superadmin: fetch history of a target client passed in params
+      // If admin/superadmin/partner: fetch history of a target client passed in params
       let targetClientId = currentUserId;
-      if (["SuperAdmin", "Admin"].includes(currentUserRole) && req.params.userId) {
+      if (req.params.userId) {
+        // Tenancy boundary check for B2B partner users
+        if (!["SuperAdmin", "Admin"].includes(currentUserRole)) {
+          const institutionId = req.user.institutionId;
+          if (!institutionId) {
+            return res.status(403).json(responseFactory.error("Forbidden: Access denied to this user"));
+          }
+          const products = await FinancialProduct.find({ institutionId });
+          const productIds = products.map(p => p._id);
+          const appExists = await Application.exists({ userId: req.params.userId, productId: { $in: productIds } });
+          if (!appExists) {
+            return res.status(403).json(responseFactory.error("Forbidden: Access denied to this user"));
+          }
+        }
         targetClientId = req.params.userId;
       }
 
@@ -65,26 +107,20 @@ export const chatController = {
       .populate("recipientId", "firstName lastName role email");
 
       // Mark unread messages received by the current user as read
-      await Message.updateMany(
-        {
-          recipientId: currentUserId,
-          senderId: targetClientId,
-          isRead: false
-        },
-        { $set: { isRead: true } }
-      );
+      const readFilter: any = {
+        recipientId: currentUserId,
+        isRead: false
+      };
 
-      // Also support marking public support messages as read for admins
-      if (["SuperAdmin", "Admin"].includes(currentUserRole)) {
-        await Message.updateMany(
-          {
-            senderId: targetClientId,
-            recipientId: { $exists: false },
-            isRead: false
-          },
-          { $set: { isRead: true } }
-        );
+      if (currentUserRole === "Customer") {
+        // Customer should mark incoming support replies as read
+        readFilter.senderRole = { $ne: "Customer" };
+      } else {
+        // Admin/Staff should mark customer messages in the selected thread as read
+        readFilter.senderId = targetClientId;
       }
+
+      await Message.updateMany(readFilter, { $set: { isRead: true } });
 
       return res.json(
         responseFactory.success(history, "Chat history retrieved successfully")
@@ -97,6 +133,20 @@ export const chatController = {
   // Compile list of unique client conversation channels for the Admin Panel
   getAdminConversations: async (req: any, res: Response) => {
     try {
+      const role = req.user.role;
+      let allowedCustomerIds: string[] = [];
+      const isPlatformAdmin = ["SuperAdmin", "Admin"].includes(role);
+
+      if (!isPlatformAdmin) {
+        const institutionId = req.user.institutionId;
+        if (institutionId) {
+          const products = await FinancialProduct.find({ institutionId });
+          const productIds = products.map(p => p._id);
+          const applications = await Application.find({ productId: { $in: productIds } });
+          allowedCustomerIds = applications.map(app => app.userId.toString());
+        }
+      }
+
       // Find all messages that are from Customers or sent to Customers
       const allMessages = await Message.find()
         .sort({ createdAt: -1 })
@@ -117,6 +167,11 @@ export const chatController = {
         if (!customer || !customer._id) return;
 
         const customerId = customer._id.toString();
+
+        // Multi-tenant check: B2B partner users only see threads of their own applicants
+        if (!isPlatformAdmin && !allowedCustomerIds.includes(customerId)) {
+          return;
+        }
 
         if (!threadsMap[customerId]) {
           threadsMap[customerId] = {

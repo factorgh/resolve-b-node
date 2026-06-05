@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { documentController } from '../controllers/document.controller';
 import { authMiddleware } from '../middlewares/auth.middleware';
 import { requireRole } from '../middlewares/role.middleware';
+import { requirePermission } from '../middlewares/permission.middleware';
 
 const router = Router();
 
@@ -10,16 +11,31 @@ router.get('/my-documents', authMiddleware, documentController.getUserDocuments)
 router.post('/upload', authMiddleware, documentController.uploadDocument);
 
 // Admin & Partner endpoints
+const allowedRoles = [
+  'Admin',
+  'SuperAdmin',
+  'InstitutionAdmin',
+  'InsuranceAdmin',
+  'BNPLAdmin',
+  'Insurance',
+  'BNPL',
+  'InstitutionStaff',
+  'InsuranceStaff',
+  'BNPLStaff'
+];
+
 router.get(
   '/admin', 
   authMiddleware, 
-  requireRole(['Admin', 'SuperAdmin', 'InstitutionAdmin', 'InsuranceAdmin', 'BNPLAdmin', 'Insurance', 'BNPL']), 
+  requireRole(allowedRoles), 
+  requirePermission('kyc'),
   documentController.adminGetPendingDocuments
 );
 router.patch(
   '/admin/:id/verify', 
   authMiddleware, 
-  requireRole(['Admin', 'SuperAdmin', 'InstitutionAdmin', 'InsuranceAdmin', 'BNPLAdmin', 'Insurance', 'BNPL']), 
+  requireRole(allowedRoles), 
+  requirePermission('kyc'),
   documentController.adminVerifyDocument
 );
 

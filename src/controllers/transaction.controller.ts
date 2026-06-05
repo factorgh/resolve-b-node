@@ -13,10 +13,12 @@ export const transactionController = {
         id: tx._id,
         date: new Date(tx.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         desc: tx.description,
-        amount: `${tx.type === 'debit' ? '−' : '+'}GH₵ ${Math.abs(tx.amount).toLocaleString()}`,
+        description: tx.description,
+        amount: tx.amount,
         status: tx.status,
         type: tx.type,
         cat: tx.category,
+        category: tx.category,
         reference: tx.reference || tx._id.toString().substring(0, 8).toUpperCase()
       }));
 

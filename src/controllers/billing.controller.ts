@@ -3,6 +3,9 @@ import { responseFactory } from "../utils/responseFactory";
 import BillingInvoice from "../models/billing.model";
 import BillingFeePlan from "../models/billingFeePlan.model";
 import Institution from "../models/institution.model";
+import PaymentTransaction from "../models/paymentTransaction.model";
+import Transaction from "../models/transaction.model";
+import { paystackService } from "../services/paystack.service";
 import { auditLogger } from "../utils/auditLogger";
 
 export const billingController = {
@@ -380,6 +383,23 @@ export const billingController = {
       invoice.paidAt = new Date();
       await invoice.save();
 
+      // Create standard ledger record
+      const ledgerRef = `INV-PAY-${invoice.reference}`;
+      const existingLedger = await Transaction.findOne({ reference: ledgerRef });
+      if (!existingLedger) {
+        await Transaction.create({
+          userId: req.user.id,
+          institutionId: invoice.institutionId,
+          description: invoice.description || `Platform invoice settlement (${invoice.reference})`,
+          amount: invoice.amount,
+          type: "debit",
+          category: "Subscription",
+          status: "Completed",
+          reference: ledgerRef,
+          date: new Date(),
+        });
+      }
+
       // Log to compliance ledger
       await auditLogger.log({
         adminId: req.user.id,
@@ -426,25 +446,83 @@ export const billingController = {
 
       for (const inst of dueInstitutions) {
         const reference = `SUB-${inst.name.substring(0, 3).toUpperCase()}-${Date.now().toString().substring(8)}-${Math.floor(Math.random() * 100)}`;
+        const arrears = inst.accumulatedArrears || 0;
+        const totalAmount = inst.subscriptionFee + arrears;
 
-        // Create the invoice
+        // Attempt automatic background deduction if a tokenized payment method is registered
+        let paymentStatus: "Paid" | "Unpaid" = "Unpaid";
+        let paidAt = undefined;
+        let deductionDetails = "";
+
+        if (inst.paystackAuthorizationCode) {
+          const autoChargeRef = `AUTO-${inst.name.substring(0, 3).toUpperCase()}-${Date.now().toString().substring(8)}`;
+          console.log(`[BillingRun] Triggering automatic background charge of GH₵ ${totalAmount} for ${inst.name}`);
+
+          const chargeResult: any = await paystackService.chargeAuthorization(
+            inst.email,
+            Math.round(totalAmount * 100), // Convert GHS to kobo
+            inst.paystackAuthorizationCode,
+            autoChargeRef,
+            { institutionId: inst._id.toString(), isRecurringSubscription: true }
+          );
+
+          if (chargeResult.status && chargeResult.data?.status === "success") {
+            paymentStatus = "Paid";
+            paidAt = new Date();
+            deductionDetails = ` (Auto-Deducted successfully via Paystack; Ref: ${autoChargeRef})`;
+
+            // Document background charge in PaymentTransaction collection
+            await PaymentTransaction.create({
+              userId: req.user.id,
+              reference: autoChargeRef,
+              amount: totalAmount,
+              currency: "GHS",
+              status: "success",
+              paymentMethod: chargeResult.data.authorization?.channel || "card",
+              description: `Automated recurring payment for ${inst.name} subscription and connection arrears`,
+              customerEmail: inst.email,
+              providerResponse: chargeResult.data,
+              verificationData: { verifiedAt: new Date(), verificationResponse: chargeResult.data },
+            });
+
+            // Create standard ledger record
+            await Transaction.create({
+              userId: req.user.id,
+              institutionId: inst._id,
+              description: `Automated recurring platform invoice payment (${autoChargeRef})`,
+              amount: totalAmount,
+              type: "debit",
+              category: "Subscription",
+              status: "Completed",
+              reference: `INV-PAY-${autoChargeRef}`,
+              date: new Date(),
+            });
+          } else {
+            console.warn(`[BillingRun] Auto-charge failed for ${inst.name}: ${chargeResult.message || "Declined"}`);
+            deductionDetails = ` (Auto-Deduction failed/declined; Invoice remains outstanding)`;
+          }
+        }
+
+        // Create the consolidated invoice
         await BillingInvoice.create({
           institutionId: inst._id,
-          amount: inst.subscriptionFee,
-          description: `Platform subscription fee for cycle beginning ${inst.lastBillingDate.toLocaleDateString()}`,
+          amount: totalAmount,
+          description: `Platform subscription fee (GH₵ ${inst.subscriptionFee}) + consolidated connection arrears (GH₵ ${arrears}) for cycle beginning ${inst.lastBillingDate.toLocaleDateString()}`,
           dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // Due in 14 days
-          status: "Unpaid",
+          status: paymentStatus,
+          paidAt: paidAt,
           reference,
           billingDate: new Date(),
         });
 
-        // Advance billing parameters
+        // Advance billing parameters and reset arrears
         inst.lastBillingDate = new Date();
         const duration =
           inst.billingCycle === "annually"
             ? 365 * 24 * 60 * 60 * 1000
             : 30 * 24 * 60 * 60 * 1000;
         inst.nextBillingDate = new Date(Date.now() + duration);
+        inst.accumulatedArrears = 0; // Reset arrears to 0 for next cycle
         await inst.save();
 
         invoicesCreated++;
@@ -454,7 +532,7 @@ export const billingController = {
           adminId: req.user.id,
           action: "BillingCycleRenewal",
           targetId: inst._id as any,
-          details: `Processed billing renewal run for ${inst.name}. Created subscription invoice ${reference} for GH₵ ${inst.subscriptionFee}.`,
+          details: `Processed billing renewal run for ${inst.name}. Created subscription invoice ${reference} for GH₵ ${totalAmount} (GH₵ ${inst.subscriptionFee} subscription fee + GH₵ ${arrears} connection arrears).${deductionDetails}`,
           ipAddress: req.ip,
           userAgent: req.headers["user-agent"],
         });
@@ -465,6 +543,49 @@ export const billingController = {
           { count: invoicesCreated },
           `Billing cycle run executed. Processed ${invoicesCreated} renewals.`,
         ),
+      );
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  initializeInvoicePayment: async (req: any, res: Response) => {
+    try {
+      const { id } = req.params;
+      const invoice = await BillingInvoice.findById(id).populate("institutionId");
+      if (!invoice) {
+        return res.status(404).json(responseFactory.notFound("Invoice not found"));
+      }
+
+      if (invoice.status === "Paid") {
+        return res.status(400).json(responseFactory.error("Invoice is already paid"));
+      }
+
+      const reference = `PSK-INV-${invoice._id}-${Date.now()}`;
+      const inst = invoice.institutionId as any;
+
+      // Initiate payment with Paystack
+      const paymentResult = await paystackService.initiatePayment({
+        email: inst.email || req.user.email,
+        amount: Math.round(invoice.amount * 100), // Convert GHS to kobo
+        reference,
+        userId: req.user.id,
+        description: `Platform invoice payment (${invoice.reference})`,
+        metadata: {
+          isInvoicePayment: true,
+          invoiceId: invoice._id.toString(),
+        },
+      });
+
+      return res.status(200).json(
+        responseFactory.success(
+          {
+            requiresPayment: true,
+            authorizationUrl: paymentResult.authorizationUrl,
+            reference: paymentResult.reference,
+          },
+          "Payment initialized. Redirect to Paystack to complete invoice payment."
+        )
       );
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));

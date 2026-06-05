@@ -9,5 +9,6 @@ router.post('/register', authController.register);
 router.post('/login', authController.login);
 router.get('/me', authMiddleware, authController.getMe);
 router.post('/verify-kyc', authMiddleware, upload.array('files'), authController.verifyKyc);
+router.post('/reset-temp-password', authMiddleware, authController.resetTempPassword);
 
 export default router;
