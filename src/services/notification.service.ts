@@ -13,13 +13,15 @@ export const notificationService = {
     type,
     title,
     message,
+    targetId,
   }: {
     userId: string;
     type: string;
     title: string;
     message: string;
+    targetId?: string;
   }) => {
-    return Notification.create({ userId, type, title, message });
+    return Notification.create({ userId, type, title, message, targetId });
   },
 
   getUserNotifications: async (userId: string, limit = 25, skip = 0) => {
@@ -45,6 +47,7 @@ export const notificationService = {
     type,
     title,
     message,
+    targetId,
     email = false,
     sms = false,
   }: {
@@ -52,6 +55,7 @@ export const notificationService = {
     type: string;
     title: string;
     message: string;
+    targetId?: string;
     email?: boolean;
     sms?: boolean;
   }) => {
@@ -60,7 +64,7 @@ export const notificationService = {
       throw new Error("User not found for notifications");
     }
 
-    await Notification.create({ userId, type, title, message });
+    await Notification.create({ userId, type, title, message, targetId });
 
     const sendPromises: Promise<unknown>[] = [];
 

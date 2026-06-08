@@ -325,19 +325,45 @@ export const paystackService = {
                 reference: ledgerRef,
                 date: new Date(),
               });
-            }
-
-            // Notify user of successful submission
+            }            // Notify user of successful submission
             const user = await User.findById(transaction.userId);
+            const product = await FinancialProduct.findById(application.productId).populate("institutionId");
+            const institutionName = (product?.institutionId as any)?.name || "Partner Institution";
+            const productName = product?.name || "Financial Product";
+
             if (user?._id) {
               await notificationService.notifyUser({
                 userId: user._id.toString(),
                 type: "ApplicationReview",
-                title: "Application Submitted",
-                message: `Your client connection fee payment has been verified. Your application ${application._id.toString().slice(-8)} is now Pending review.`,
+                title: "Application Submitted Successfully",
+                message: `Your connection fee of GH₵ ${transaction.amount.toLocaleString()} was verified successfully. Your application for ${productName} has been submitted to ${institutionName} for review.`,
+                targetId: application._id.toString(),
                 email: true,
                 sms: true,
               });
+            }
+
+            // Notify B2B partner institution admins/staff of the new application
+            try {
+              if (product && product.institutionId) {
+                const institutionUsers = await User.find({
+                  institutionId: (product.institutionId as any)._id || product.institutionId,
+                  role: { $in: ["InstitutionAdmin", "InstitutionStaff", "InsuranceAdmin", "InsuranceStaff", "BNPLAdmin", "BNPLStaff"] },
+                });
+                
+                for (const instUser of institutionUsers) {
+                  await notificationService.createNotification({
+                    userId: instUser._id.toString(),
+                    type: "ApplicationReview",
+                    title: "New Application Received",
+                    message: `A new application of GH₵ ${application.amount.toLocaleString()} has been submitted for ${productName} by ${user?.firstName || "Applicant"} ${user?.lastName || ""} and is awaiting review.`,
+                    targetId: application._id.toString(),
+                  });
+                }
+                console.log(`[PaystackService] Notified ${institutionUsers.length} B2B users of institution ${product.institutionId} for application ${application._id}`);
+              }
+            } catch (err: any) {
+              console.error("[PaystackService] Failed to send B2B notifications:", err.message);
             }
 
             console.log(`[PaystackService] Successfully activated application ${application._id} following connection fee payment.`);

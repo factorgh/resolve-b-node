@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
 import { responseFactory } from '../utils/responseFactory';
 import UserDocument from '../models/document.model';
+import User from '../models/user.model';
 import { auditLogger } from '../utils/auditLogger';
+import { storageService } from '../services/storage.service';
 
 export const documentController = {
   getUserDocuments: async (req: any, res: Response) => {
@@ -49,6 +51,69 @@ export const documentController = {
     }
   },
 
+  uploadFile: async (req: any, res: Response) => {
+    try {
+      const userId = req.user.id;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json(responseFactory.error('No file uploaded'));
+      }
+
+      const fileName = `vault/${userId}/${Date.now()}-${file.originalname}`;
+      const url = await storageService.uploadFile(file.buffer, fileName, file.mimetype);
+
+      return res.status(200).json(responseFactory.success({ url }, 'File uploaded to storage successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+  deleteDocument: async (req: any, res: Response) => {
+    try {
+      const userId = req.user.id;
+      const { id } = req.params;
+
+      const doc = await UserDocument.findOne({ _id: id, userId });
+      if (!doc) {
+        return res.status(404).json(responseFactory.notFound('Document not found or access denied'));
+      }
+
+      // If document has R2 URL, try to delete from Cloudflare R2
+      if (doc.documentUrl) {
+        let key = '';
+        try {
+          const urlObj = new URL(doc.documentUrl);
+          key = decodeURIComponent(urlObj.pathname.substring(1));
+        } catch (urlError: any) {
+          console.warn(`Skipping R2 file deletion: invalid or unparseable URL (${doc.documentUrl})`);
+        }
+
+        if (key && key.startsWith('vault/')) {
+          try {
+            console.log(`Deleting file from R2: ${key}`);
+            await storageService.deleteFile(key);
+          } catch (r2Error: any) {
+            console.error(`Compliance Warning: Failed to delete R2 object (${key}) during vault cleanup:`, r2Error.message);
+          }
+        }
+      }
+
+      // Delete from MongoDB
+      await UserDocument.deleteOne({ _id: id });
+
+      // Reset user KYC status back to Pending since their vault has changed
+      const user = await User.findById(userId);
+      if (user) {
+        user.kycStatus = 'Pending';
+        await user.save();
+      }
+
+      return res.json(responseFactory.success(null, 'Document deleted successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
   adminGetPendingDocuments: async (req: any, res: Response) => {
     try {
       const { role } = req.user;
@@ -93,7 +158,6 @@ export const documentController = {
 
       // If document is verified, check if we should elevate user's KYC status to 'Verified'
       if (isVerified) {
-        const User = require('../models/user.model').default;
         const user = await User.findById(doc.userId);
         if (user && user.kycStatus !== 'Verified') {
           // Check if user has at least one verified document and no more unverified ones
@@ -106,7 +170,6 @@ export const documentController = {
         }
       } else {
         // If rejected, set user KYC status back to Pending or Rejected
-        const User = require('../models/user.model').default;
         const user = await User.findById(doc.userId);
         if (user) {
           user.kycStatus = 'Pending';

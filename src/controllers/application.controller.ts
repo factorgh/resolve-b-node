@@ -35,11 +35,17 @@ export const applicationController = {
           amount: `GH₵ ${app.amount.toLocaleString()}`,
           status: app.status,
           progress:
-            app.status === "Approved"
-              ? 100
+            app.status === "PaymentPending"
+              ? 10
               : app.status === "Pending"
                 ? 25
-                : 50,
+                : app.status === "UnderReview"
+                  ? 50
+                  : app.status === "Approved"
+                    ? 75
+                    : (app.status === "Disbursed" || app.status === "Completed" || app.status === "Rejected" || app.status === "Cancelled")
+                      ? 100
+                      : 50,
           date: new Date(app.submittedAt).toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
@@ -47,30 +53,58 @@ export const applicationController = {
           }),
           logo: institution?.logoUrl || "/resolve_icon.png",
           color:
-            app.status === "Approved"
+            (app.status === "Approved" || app.status === "Disbursed" || app.status === "Completed")
               ? "#10b981"
-              : app.status === "Rejected"
-                ? "#e11d48"
-                : "#0033aa",
+              : (app.status === "Pending" || app.status === "UnderReview")
+                ? "#2051e5"
+                : app.status === "PaymentPending"
+                  ? "#f59e0b"
+                  : app.status === "Rejected"
+                    ? "#ef4444"
+                    : "#64748b",
+          rejectionReason: app.rejectionReason,
           steps: [
             {
               label: "Submitted",
               date: new Date(app.submittedAt).toLocaleDateString(),
-              desc: "Application received",
+              desc: app.status === "PaymentPending" ? "Pending connection payment" : "Application received",
             },
             {
               label: "Reviewing",
               date: app.reviewedAt
                 ? new Date(app.reviewedAt).toLocaleDateString()
-                : "In Progress",
+                : (["UnderReview", "Approved", "Disbursed", "Completed", "Rejected", "Cancelled"].includes(app.status)
+                  ? new Date(app.submittedAt).toLocaleDateString()
+                  : "In Progress"),
               desc: "Institutional assessment",
             },
             {
               label: "Approval",
               date: app.approvedAt
                 ? new Date(app.approvedAt).toLocaleDateString()
-                : "Pending",
-              desc: "Final decision",
+                : (app.rejectedAt
+                  ? new Date(app.rejectedAt).toLocaleDateString()
+                  : (["Approved", "Disbursed", "Completed"].includes(app.status)
+                    ? new Date(app.updatedAt).toLocaleDateString()
+                    : (app.status === "Rejected" || app.status === "Cancelled"
+                      ? new Date(app.updatedAt).toLocaleDateString()
+                      : "Pending"))),
+              desc: app.status === "Rejected"
+                ? `Rejected: ${app.rejectionReason || "No reason provided"}`
+                : (app.status === "Cancelled" ? "Cancelled" : "Final decision"),
+            },
+            {
+              label: product?.productType === "Insurance" ? "Policy Active" : "Disbursement",
+              date: (app.status === "Disbursed" || app.status === "Completed")
+                ? new Date(app.updatedAt).toLocaleDateString()
+                : (app.status === "Rejected" || app.status === "Cancelled" ? "Cancelled" : "Pending"),
+              desc: app.status === "Completed"
+                ? "Completed & settled"
+                : (app.status === "Disbursed"
+                  ? "Funds disbursed successfully"
+                  : (app.status === "Rejected" || app.status === "Cancelled"
+                    ? "Application ended"
+                    : (product?.productType === "Insurance" ? "Policy activation" : "Funds transfer"))),
             },
           ],
         };
@@ -236,7 +270,10 @@ export const applicationController = {
       }
 
       const application = await Application.findById(id)
-        .populate("productId")
+        .populate({
+          path: "productId",
+          populate: { path: "institutionId" },
+        })
         .populate("userId", "firstName lastName email phoneNumber creditScore");
       if (!application) {
         return res
@@ -318,17 +355,41 @@ export const applicationController = {
       });
 
       const user = application.userId as any;
-      const notificationMessage =
-        status === "Rejected"
-          ? `Your application has been rejected. Reason: ${application.rejectionReason}`
-          : `Your application state has been updated to ${status}.`;
+      const product = application.productId as any;
+      const productName = product?.name || "Financial Product";
+      const institutionName = product?.institutionId?.name || "Institution Partner";
+      const amountStr = application.amount ? `GH₵ ${application.amount.toLocaleString()}` : "funds";
+
+      let notificationTitle = `Application Status Update`;
+      let notificationMessage = `Your application for ${productName} with ${institutionName} has been updated to ${status}.`;
+
+      if (status === "UnderReview") {
+        notificationTitle = "Application Under Review";
+        notificationMessage = `${institutionName} has started processing your application for ${productName} (${amountStr}). We will update you as soon as a decision is made.`;
+      } else if (status === "Approved") {
+        notificationTitle = "Application Approved!";
+        notificationMessage = `Great news! Your application for ${productName} of ${amountStr} has been approved by ${institutionName}. You can now view your service contract.`;
+      } else if (status === "Disbursed") {
+        notificationTitle = "Funds Disbursed";
+        notificationMessage = `Congratulations! The approved funds of ${amountStr} for your ${productName} have been successfully disbursed to your designated wallet/account by ${institutionName}.`;
+      } else if (status === "Completed") {
+        notificationTitle = "Facility Completed & Settled";
+        notificationMessage = `Your credit facility for ${productName} with ${institutionName} has been fully completed and settled. Thank you for using ResolveBridge.`;
+      } else if (status === "Rejected") {
+        notificationTitle = "Application Update: Declined";
+        notificationMessage = `Your application for ${productName} has been declined by ${institutionName}. Reason: ${application.rejectionReason || "Underwriting criteria not met"}. You can contact support for details.`;
+      } else if (status === "Cancelled") {
+        notificationTitle = "Application Cancelled";
+        notificationMessage = `Your application for ${productName} with ${institutionName} has been cancelled.`;
+      }
 
       if (user?._id) {
         await notificationService.notifyUser({
           userId: user._id.toString(),
           type: "ApplicationReview",
-          title: `Application ${status}`,
+          title: notificationTitle,
           message: notificationMessage,
+          targetId: application._id.toString(),
           email: true,
           sms: true,
         });
@@ -339,6 +400,7 @@ export const applicationController = {
         type: "AdminAction",
         title: `Reviewed application ${application._id.toString().slice(-6)}`,
         message: `Marked application ${application._id.toString().slice(-8)} as ${status}.`,
+        targetId: application._id.toString(),
       });
 
       // If status transitioned to Disbursed, record corresponding Transaction
@@ -378,7 +440,10 @@ export const applicationController = {
       const { role, institutionId } = req.user;
 
       const application = await Application.findById(id)
-        .populate("productId")
+        .populate({
+          path: "productId",
+          populate: { path: "institutionId" },
+        })
         .populate("userId", "firstName lastName email phoneNumber creditScore");
       if (!application) {
         return res
@@ -430,13 +495,16 @@ export const applicationController = {
       });
 
       const user = application.userId as any;
+      const product = application.productId as any;
+      const productName = product?.name || "Financial Product";
+      const institutionName = product?.institutionId?.name || "Institution Partner";
+
       if (user?._id) {
         await notificationService.notifyUser({
           userId: user._id.toString(),
           type: "ApplicationReview",
-          title: "Application Restored",
-          message:
-            "Your application has been restored to Pending for a follow-up review.",
+          title: "Application Re-opened",
+          message: `Good news! Your application for ${productName} has been re-opened by ${institutionName} and returned to the review desk for a follow-up assessment.`,
           email: true,
           sms: true,
         });
@@ -715,6 +783,21 @@ export const applicationController = {
 
       application.assignedTo = assignedTo ? (assignedTo as any) : undefined;
       await application.save();
+
+      // Create notification for the assignee
+      if (assignedTo && assigneeUser) {
+        try {
+          await notificationService.createNotification({
+            userId: assignedTo,
+            type: "ApplicationReview",
+            title: "Application Assigned",
+            message: `Application ${application._id.toString().slice(-8)} has been assigned to you by ${req.user.firstName} ${req.user.lastName}.`,
+            targetId: application._id.toString(),
+          });
+        } catch (err: any) {
+          console.error("[AdminAssignApplication] Failed to create notification:", err.message);
+        }
+      }
 
       // Log action to compliance ledger
       await auditLogger.log({
