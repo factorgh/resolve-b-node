@@ -23,12 +23,15 @@ import analyticsRoutes from "./routes/analytics.routes";
 import chatRoutes from "./routes/chat.routes";
 import subscriptionRoutes from "./routes/subscription.routes";
 
+import { payloadEncryptionMiddleware } from "./middlewares/payloadEncryption.middleware";
+
 const app = express();
 
 app.use(helmet());
 app.use(cors());
 app.use(morgan("dev"));
 app.use(express.json());
+app.use(payloadEncryptionMiddleware);
 
 // Routes
 app.use("/api/v1/Auth", authRoutes);
@@ -58,6 +61,16 @@ app.get("/health", (req, res) => {
 // Secure Global Error Handling Middleware to prevent unhandled fault leakage to B2B partners
 app.use((err: any, req: any, res: any, next: any) => {
   console.error("[UnhandledException] Detailed System Error:", err);
+
+  // Catch Multer file size limitation breach errors
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    const maxFileSizeMb = Number(process.env.MAX_FILE_SIZE_MB) || 10;
+    return res.status(400).json({
+      success: false,
+      message: `File upload failed: File exceeds the maximum allowed size limit (${maxFileSizeMb}MB).`,
+      statusCode: 400
+    });
+  }
 
   res.status(500).json({
     success: false,
