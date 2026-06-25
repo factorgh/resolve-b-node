@@ -31,6 +31,7 @@ export const applicationController = {
           id: app._id,
           type: product?.productType || "Loan",
           provider: institution?.name || "Institution",
+          providerId: institution?._id || null,
           product: product?.name || "Financial Product",
           amount: `GH₵ ${app.amount.toLocaleString()}`,
           status: app.status,

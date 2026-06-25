@@ -103,6 +103,7 @@ export const productController = {
           id: p._id,
           name: p.name,
           provider: institution?.name || "Institution",
+          providerId: institution?._id || null,
           cat: p.productType,
           rate: p.interestRate,
           rateSuffix: p.productType === "insurance" ? "/mo" : "%",

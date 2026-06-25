@@ -10,7 +10,7 @@ export const chatController = {
   sendMessage: async (req: any, res: Response) => {
     try {
       const senderId = req.user.id;
-      const { text, recipientId } = req.body;
+      const { text, recipientId, institutionId } = req.body;
 
       if (!text || !text.trim()) {
         return res.status(400).json(responseFactory.error("Message text is required"));
@@ -46,13 +46,39 @@ export const chatController = {
         isRead: false
       };
 
-      if (recipientId) {
-        messagePayload.recipientId = recipientId;
-      } else if (sender.role === "Customer") {
-        // Assign incoming customer support requests to any available admin/support user
-        const supportUser = await User.findOne({ role: { $in: ["SuperAdmin", "Admin"] } }).sort({ createdAt: 1 });
-        if (supportUser) {
-          messagePayload.recipientId = supportUser._id;
+      if (sender.role === "Customer") {
+        if (institutionId) {
+          messagePayload.institutionId = institutionId;
+          
+          let targetRecipientId = recipientId;
+          if (!targetRecipientId) {
+            // Find a partner staff user belonging to the institution to set as recipient
+            const staffUser = await User.findOne({ institutionId, role: { $ne: "Customer" } }).sort({ createdAt: 1 });
+            if (staffUser) {
+              targetRecipientId = staffUser._id;
+            }
+          }
+          if (targetRecipientId) {
+            messagePayload.recipientId = targetRecipientId;
+          }
+        } else {
+          // Standard platform support chat: assign recipient to support admin
+          if (recipientId) {
+            messagePayload.recipientId = recipientId;
+          } else {
+            const supportUser = await User.findOne({ role: { $in: ["SuperAdmin", "Admin"] } }).sort({ createdAt: 1 });
+            if (supportUser) {
+              messagePayload.recipientId = supportUser._id;
+            }
+          }
+        }
+      } else {
+        // Sender is Partner/Staff/Admin
+        if (sender.institutionId) {
+          messagePayload.institutionId = sender.institutionId;
+        }
+        if (recipientId) {
+          messagePayload.recipientId = recipientId;
         }
       }
 
@@ -69,7 +95,7 @@ export const chatController = {
     }
   },
 
-  // Get conversation history between a client and admin/support
+  // Get conversation history between a client and admin/support/partner
   getChatHistory: async (req: any, res: Response) => {
     try {
       const currentUserId = req.user.id;
@@ -88,23 +114,46 @@ export const chatController = {
           const products = await FinancialProduct.find({ institutionId });
           const productIds = products.map(p => p._id);
           const appExists = await Application.exists({ userId: req.params.userId, productId: { $in: productIds } });
-          if (!appExists) {
+          
+          const directMsgExists = await Message.exists({
+            institutionId,
+            $or: [
+              { senderId: req.params.userId },
+              { recipientId: req.params.userId }
+            ]
+          });
+
+          if (!appExists && !directMsgExists) {
             return res.status(403).json(responseFactory.error("Forbidden: Access denied to this user"));
           }
         }
         targetClientId = req.params.userId;
       }
 
-      // Fetch all messages involving the target client
-      const history = await Message.find({
-        $or: [
+      const query: any = {};
+      const institutionId = req.query.institutionId;
+
+      if (institutionId) {
+        query.institutionId = institutionId;
+        query.$or = [
           { senderId: targetClientId },
           { recipientId: targetClientId }
-        ]
-      })
+        ];
+      } else {
+        // Support Chat Desk: fetch messages where institutionId is NOT set
+        query.institutionId = { $exists: false };
+        query.$or = [
+          { senderId: targetClientId },
+          { recipientId: targetClientId }
+        ];
+      }
+
+      // Fetch messages based on query
+      const history = await Message.find(query)
       .sort({ createdAt: 1 })
       .populate("senderId", "firstName lastName role email")
-      .populate("recipientId", "firstName lastName role email");
+      .populate("recipientId", "firstName lastName role email")
+      .populate("institutionId", "name logoUrl");
 
       // Mark unread messages received by the current user as read
       const readFilter: any = {
@@ -113,11 +162,18 @@ export const chatController = {
       };
 
       if (currentUserRole === "Customer") {
-        // Customer should mark incoming support replies as read
+        // Customer should mark incoming support/partner replies as read
         readFilter.senderRole = { $ne: "Customer" };
       } else {
-        // Admin/Staff should mark customer messages in the selected thread as read
+        // Admin/Staff/Partner should mark customer messages in the selected thread as read
         readFilter.senderId = targetClientId;
+      }
+
+      // Filter read marking to the specific thread (direct/support)
+      if (institutionId) {
+        readFilter.institutionId = institutionId;
+      } else {
+        readFilter.institutionId = { $exists: false };
       }
 
       await Message.updateMany(readFilter, { $set: { isRead: true } });
@@ -134,6 +190,7 @@ export const chatController = {
   getAdminConversations: async (req: any, res: Response) => {
     try {
       const role = req.user.role;
+      const isDirect = req.query.isDirect === 'true';
       let allowedCustomerIds: string[] = [];
       const isPlatformAdmin = ["SuperAdmin", "Admin"].includes(role);
 
@@ -147,11 +204,27 @@ export const chatController = {
         }
       }
 
-      // Find all messages that are from Customers or sent to Customers
-      const allMessages = await Message.find()
+      // Define message filter query
+      const msgQuery: any = {};
+      if (isDirect) {
+        if (!isPlatformAdmin) {
+          // B2B partner sees direct conversations for their own institutionId
+          msgQuery.institutionId = req.user.institutionId;
+        } else {
+          // Platform admin sees all direct conversations
+          msgQuery.institutionId = { $exists: true };
+        }
+      } else {
+        // Platform support conversations (where institutionId is NOT set)
+        msgQuery.institutionId = { $exists: false };
+      }
+
+      // Find all messages matching the filters
+      const allMessages = await Message.find(msgQuery)
         .sort({ createdAt: -1 })
         .populate("senderId", "firstName lastName email role")
-        .populate("recipientId", "firstName lastName email role");
+        .populate("recipientId", "firstName lastName email role")
+        .populate("institutionId", "name logoUrl");
 
       const threadsMap: { [key: string]: any } = {};
 
@@ -168,8 +241,12 @@ export const chatController = {
 
         const customerId = customer._id.toString();
 
-        // Multi-tenant check: B2B partner users only see threads of their own applicants
-        if (!isPlatformAdmin && !allowedCustomerIds.includes(customerId)) {
+        // Multi-tenant check: B2B partner users only see threads of their own applicants or direct contact threads
+        if (
+          !isPlatformAdmin && 
+          !allowedCustomerIds.includes(customerId) && 
+          msg.institutionId?.toString() !== req.user.institutionId?.toString()
+        ) {
           return;
         }
 
