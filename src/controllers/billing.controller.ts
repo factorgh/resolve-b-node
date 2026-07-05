@@ -7,6 +7,7 @@ import PaymentTransaction from "../models/paymentTransaction.model";
 import Transaction from "../models/transaction.model";
 import { paystackService } from "../services/paystack.service";
 import { auditLogger } from "../utils/auditLogger";
+import { claimInvoicePaid } from "../services/paymentProcessing.service";
 
 export const billingController = {
   getInvoices: async (req: any, res: Response) => {
@@ -369,28 +370,41 @@ export const billingController = {
 
   payInvoice: async (req: any, res: Response) => {
     try {
-      const { id } = req.params;
+      const { role } = req.user;
+      const { confirmManualPayment, paymentReference } = req.body;
 
-      const invoice =
-        await BillingInvoice.findById(id).populate("institutionId");
-      if (!invoice) {
-        return res
-          .status(404)
-          .json(responseFactory.notFound("Invoice record not found"));
+      if (role !== "SuperAdmin" && role !== "Admin") {
+        return res.status(403).json(
+          responseFactory.error("Only platform admins can manually mark invoices paid. Use initialize-payment for Paystack checkout."),
+        );
       }
 
-      invoice.status = "Paid";
-      invoice.paidAt = new Date();
-      await invoice.save();
+      if (!confirmManualPayment) {
+        return res.status(400).json(
+          responseFactory.error("Manual settlement requires confirmManualPayment: true (offline/wire payments only)"),
+        );
+      }
 
-      // Create standard ledger record
+      const { id } = req.params;
+
+      const invoice = await claimInvoicePaid(id);
+      if (!invoice) {
+        const existing = await BillingInvoice.findById(id).populate("institutionId");
+        if (!existing) {
+          return res.status(404).json(responseFactory.notFound("Invoice record not found"));
+        }
+        return res.json(responseFactory.success(existing, "Invoice was already marked as paid"));
+      }
+
+      const populated = await BillingInvoice.findById(id).populate("institutionId");
+
       const ledgerRef = `INV-PAY-${invoice.reference}`;
       const existingLedger = await Transaction.findOne({ reference: ledgerRef });
       if (!existingLedger) {
         await Transaction.create({
           userId: req.user.id,
           institutionId: invoice.institutionId,
-          description: invoice.description || `Platform invoice settlement (${invoice.reference})`,
+          description: `${invoice.description || `Platform invoice settlement (${invoice.reference})`}${paymentReference ? ` Ref: ${paymentReference}` : " (manual)"}`,
           amount: invoice.amount,
           type: "debit",
           category: "Subscription",
@@ -400,19 +414,18 @@ export const billingController = {
         });
       }
 
-      // Log to compliance ledger
       await auditLogger.log({
         adminId: req.user.id,
         action: "PayInvoice",
         targetId: invoice._id as any,
-        details: `Marked invoice ${invoice.reference} for ${(invoice.institutionId as any)?.name} as fully settled/paid.`,
+        details: `Manually marked invoice ${invoice.reference} as paid${paymentReference ? `. External ref: ${paymentReference}` : ""}.`,
         ipAddress: req.ip,
         userAgent: req.headers["user-agent"],
       });
 
       return res.json(
         responseFactory.success(
-          invoice,
+          populated,
           "Invoice marked as fully paid and logged on ledger",
         ),
       );

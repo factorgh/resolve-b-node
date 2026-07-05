@@ -3,6 +3,7 @@ import { paystackService } from "../services/paystack.service";
 import { responseFactory } from "../utils/responseFactory";
 import PaymentTransaction from "../models/paymentTransaction.model";
 import { auditLogger } from "../utils/auditLogger";
+import { parsePagination } from "../utils/pagination";
 
 export const paymentController = {
   /**
@@ -152,9 +153,15 @@ export const paymentController = {
   getTransaction: async (req: any, res: Response) => {
     try {
       const { reference } = req.params;
+      const { role, id: userId } = req.user;
 
       const transaction =
         await paystackService.getTransactionByReference(reference);
+
+      const isAdmin = ["Admin", "SuperAdmin"].includes(role);
+      if (!isAdmin && transaction.userId.toString() !== userId) {
+        return res.status(403).json(responseFactory.error("Forbidden"));
+      }
 
       return res
         .status(200)
@@ -179,20 +186,22 @@ export const paymentController = {
   getPaymentHistory: async (req: any, res: Response) => {
     try {
       const userId = req.user.id;
-      const { status, limit = 10, skip = 0 } = req.query;
+      const { status } = req.query;
+      const { limit, skip } = parsePagination(req.query, 10, 50);
 
       const query: any = { userId };
       if (status) {
         query.status = status;
       }
 
-      const transactions = await PaymentTransaction.find(query)
-        .sort({ createdAt: -1 })
-        .skip(parseInt(skip))
-        .limit(parseInt(limit))
-        .populate("productId applicationId", "name description amount");
-
-      const total = await PaymentTransaction.countDocuments(query);
+      const [transactions, total] = await Promise.all([
+        PaymentTransaction.find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .populate("productId applicationId", "name description amount"),
+        PaymentTransaction.countDocuments(query),
+      ]);
 
       return res
         .status(200)
@@ -201,8 +210,8 @@ export const paymentController = {
             {
               transactions,
               total,
-              limit: parseInt(limit),
-              skip: parseInt(skip),
+              limit,
+              skip,
             },
             "Payment history retrieved successfully",
           ),
@@ -268,7 +277,8 @@ export const paymentController = {
    */
   getAllTransactions: async (req: any, res: Response) => {
     try {
-      const { status, limit = 20, skip = 0, startDate, endDate } = req.query;
+      const { status, startDate, endDate } = req.query;
+      const { limit, skip } = parsePagination(req.query, 20, 100);
 
       const query: any = {};
 
@@ -284,8 +294,8 @@ export const paymentController = {
 
       const transactions = await PaymentTransaction.find(query)
         .sort({ createdAt: -1 })
-        .skip(parseInt(skip))
-        .limit(parseInt(limit))
+        .skip(skip)
+        .limit(limit)
         .populate(
           "userId productId applicationId",
           "name email firstName lastName",
@@ -313,8 +323,8 @@ export const paymentController = {
               transactions,
               total,
               summary,
-              limit: parseInt(limit),
-              skip: parseInt(skip),
+              limit,
+              skip,
             },
             "All transactions retrieved successfully",
           ),

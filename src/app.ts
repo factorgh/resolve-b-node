@@ -22,15 +22,39 @@ import regionRoutes from "./routes/region.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import chatRoutes from "./routes/chat.routes";
 import subscriptionRoutes from "./routes/subscription.routes";
-
+import { paymentController } from "./controllers/payment.controller";
 import { payloadEncryptionMiddleware } from "./middlewares/payloadEncryption.middleware";
+import { responseFactory } from "./utils/responseFactory";
 
 const app = express();
 
+const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim());
+
 app.use(helmet());
-app.use(cors());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+  }),
+);
 app.use(morgan("dev"));
-app.use(express.json());
+
+// Paystack webhook MUST receive raw body for signature verification
+app.post(
+  "/api/v1/Payments/webhook",
+  express.raw({ type: "application/json" }),
+  paymentController.handleWebhook,
+);
+
+app.use(express.json({ limit: "2mb" }));
 app.use(payloadEncryptionMiddleware);
 
 // Routes
@@ -50,7 +74,8 @@ app.use("/api/v1/Payments", paymentRoutes);
 app.use("/api/v1/Regions", regionRoutes);
 app.use("/api/v1/Chat", chatRoutes);
 app.use("/api/v1/Subscriptions", subscriptionRoutes);
-app.get("/health", (req, res) => {
+
+app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "ResolveBridge Node Backend",
@@ -58,24 +83,35 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Secure Global Error Handling Middleware to prevent unhandled fault leakage to B2B partners
+app.use((_req, res) => {
+  res.status(404).json(responseFactory.notFound("Route not found"));
+});
+
 app.use((err: any, req: any, res: any, next: any) => {
   console.error("[UnhandledException] Detailed System Error:", err);
 
-  // Catch Multer file size limitation breach errors
-  if (err.code === 'LIMIT_FILE_SIZE') {
+  if (err.code === "LIMIT_FILE_SIZE") {
     const maxFileSizeMb = Number(process.env.MAX_FILE_SIZE_MB) || 10;
     return res.status(400).json({
       success: false,
       message: `File upload failed: File exceeds the maximum allowed size limit (${maxFileSizeMb}MB).`,
-      statusCode: 400
+      statusCode: 400,
+    });
+  }
+
+  if (err.message?.includes("not allowed")) {
+    return res.status(400).json({
+      success: false,
+      message: err.message,
+      statusCode: 400,
     });
   }
 
   res.status(500).json({
     success: false,
-    message: "An unexpected internal server error occurred. Please contact system support.",
-    statusCode: 500
+    message:
+      "An unexpected internal server error occurred. Please contact system support.",
+    statusCode: 500,
   });
 });
 

@@ -45,4 +45,9 @@ const ApplicationSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+ApplicationSchema.index({ userId: 1, status: 1 });
+ApplicationSchema.index({ productId: 1, status: 1 });
+ApplicationSchema.index({ assignedTo: 1, status: 1 });
+ApplicationSchema.index({ flaggedForReminder: 1, status: 1 });
+
 export default mongoose.model<IApplication>('Application', ApplicationSchema);

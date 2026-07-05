@@ -4,15 +4,20 @@ import UserDocument from '../models/document.model';
 import User from '../models/user.model';
 import { auditLogger } from '../utils/auditLogger';
 import { storageService } from '../services/storage.service';
+import { buildStorageKey } from '../utils/safeFilename';
+import { parsePagination, paginatedResponse } from '../utils/pagination';
 
 export const documentController = {
   getUserDocuments: async (req: any, res: Response) => {
     try {
       const userId = req.user.id;
-      const documents = await UserDocument.find({ userId })
-        .sort({ uploadedAt: -1 });
+      const { limit, skip } = parsePagination(req.query, 50, 100);
 
-      // Map to frontend expectations
+      const [documents, total] = await Promise.all([
+        UserDocument.find({ userId }).sort({ uploadedAt: -1 }).skip(skip).limit(limit),
+        UserDocument.countDocuments({ userId }),
+      ]);
+
       const mapped = documents.map(doc => ({
         id: doc._id,
         name: doc.type,
@@ -20,12 +25,15 @@ export const documentController = {
               doc.type.toLowerCase().includes('registration') ? 'ASSETS' : 'IDENTITY',
         uploaded: new Date(doc.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         expiry: doc.expiryDate ? new Date(doc.expiryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
-        size: '1.2 MB', // Mock size for now
+        size: '—',
         status: doc.isVerified ? 'Verified' : 'Pending',
         url: doc.documentUrl
       }));
 
-      return res.json(responseFactory.success(mapped, 'Documents fetched successfully'));
+      return res.json(responseFactory.success(
+        paginatedResponse(mapped, total, { limit, skip, page: Math.floor(skip / limit) + 1 }),
+        'Documents fetched successfully',
+      ));
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
     }
@@ -34,11 +42,18 @@ export const documentController = {
   uploadDocument: async (req: any, res: Response) => {
     try {
       const userId = req.user.id;
-      const { type, documentUrl, documentNumber, expiryDate } = req.body;
+      const { type, documentNumber, expiryDate } = req.body;
+
+      if (!req.file) {
+        return res.status(400).json(responseFactory.error('File upload is required. Client-supplied URLs are not accepted.'));
+      }
+
+      const fileName = buildStorageKey('vault', userId, req.file.originalname);
+      const documentUrl = await storageService.uploadFile(req.file.buffer, fileName, req.file.mimetype);
 
       const document = await UserDocument.create({
         userId,
-        type,
+        type: type || 'GENERAL',
         documentUrl,
         documentNumber,
         expiryDate,
@@ -60,7 +75,7 @@ export const documentController = {
         return res.status(400).json(responseFactory.error('No file uploaded'));
       }
 
-      const fileName = `vault/${userId}/${Date.now()}-${file.originalname}`;
+      const fileName = buildStorageKey('vault', userId, file.originalname);
       const url = await storageService.uploadFile(file.buffer, fileName, file.mimetype);
 
       return res.status(200).json(responseFactory.success({ url }, 'File uploaded to storage successfully'));
@@ -68,6 +83,7 @@ export const documentController = {
       return res.status(500).json(responseFactory.error(error.message));
     }
   },
+
   deleteDocument: async (req: any, res: Response) => {
     try {
       const userId = req.user.id;
@@ -78,35 +94,27 @@ export const documentController = {
         return res.status(404).json(responseFactory.notFound('Document not found or access denied'));
       }
 
-      // If document has R2 URL, try to delete from Cloudflare R2
       if (doc.documentUrl) {
         let key = '';
         try {
           const urlObj = new URL(doc.documentUrl);
           key = decodeURIComponent(urlObj.pathname.substring(1));
-        } catch (urlError: any) {
-          console.warn(`Skipping R2 file deletion: invalid or unparseable URL (${doc.documentUrl})`);
+        } catch {
+          console.warn(`Skipping R2 file deletion: invalid URL (${doc.documentUrl})`);
         }
 
-        if (key && key.startsWith('vault/')) {
+        if (key && (key.startsWith('vault/') || key.startsWith('kyc/'))) {
           try {
-            console.log(`Deleting file from R2: ${key}`);
             await storageService.deleteFile(key);
           } catch (r2Error: any) {
-            console.error(`Compliance Warning: Failed to delete R2 object (${key}) during vault cleanup:`, r2Error.message);
+            console.error(`Failed to delete R2 object (${key}):`, r2Error.message);
           }
         }
       }
 
-      // Delete from MongoDB
       await UserDocument.deleteOne({ _id: id });
 
-      // Reset user KYC status back to Pending since their vault has changed
-      const user = await User.findById(userId);
-      if (user) {
-        user.kycStatus = 'Pending';
-        await user.save();
-      }
+      await User.findByIdAndUpdate(userId, { kycStatus: 'Pending' });
 
       return res.json(responseFactory.success(null, 'Document deleted successfully'));
     } catch (error: any) {
@@ -116,14 +124,21 @@ export const documentController = {
 
   adminGetPendingDocuments: async (req: any, res: Response) => {
     try {
-      const { role } = req.user;
-      
-      // KYC check: standard admins and partner roles can review KYC documents
-      const documents = await UserDocument.find()
-        .populate('userId', 'firstName lastName email phoneNumber kycStatus profile')
-        .sort({ uploadedAt: -1 });
+      const { limit, skip } = parsePagination(req.query, 25, 100);
 
-      return res.json(responseFactory.success(documents, 'All KYC documents retrieved successfully'));
+      const [documents, total] = await Promise.all([
+        UserDocument.find()
+          .populate('userId', 'firstName lastName email phoneNumber kycStatus')
+          .sort({ uploadedAt: -1 })
+          .skip(skip)
+          .limit(limit),
+        UserDocument.countDocuments(),
+      ]);
+
+      return res.json(responseFactory.success(
+        paginatedResponse(documents, total, { limit, skip, page: Math.floor(skip / limit) + 1 }),
+        'KYC documents retrieved successfully',
+      ));
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
     }
@@ -145,7 +160,6 @@ export const documentController = {
       doc.verifiedAt = new Date();
       await doc.save();
 
-      // Log action to compliance ledger
       await auditLogger.log({
         adminId: verifierId,
         institutionId: req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin' ? req.user.institutionId : undefined,
@@ -156,25 +170,17 @@ export const documentController = {
         userAgent: req.headers['user-agent']
       });
 
-      // If document is verified, check if we should elevate user's KYC status to 'Verified'
       if (isVerified) {
         const user = await User.findById(doc.userId);
         if (user && user.kycStatus !== 'Verified') {
-          // Check if user has at least one verified document and no more unverified ones
           const unverifiedCount = await UserDocument.countDocuments({ userId: doc.userId, isVerified: false });
           if (unverifiedCount === 0) {
             user.kycStatus = 'Verified';
             await user.save();
-            console.log(`[KYC Elevation] User ${user._id} elevated to "Verified" due to full document approval.`);
           }
         }
       } else {
-        // If rejected, set user KYC status back to Pending or Rejected
-        const user = await User.findById(doc.userId);
-        if (user) {
-          user.kycStatus = 'Pending';
-          await user.save();
-        }
+        await User.findByIdAndUpdate(doc.userId, { kycStatus: 'Pending' });
       }
 
       return res.json(responseFactory.success(doc, `Document verification set to ${isVerified} successfully`));

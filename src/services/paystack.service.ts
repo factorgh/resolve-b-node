@@ -9,6 +9,9 @@ import { auditLogger } from "../utils/auditLogger";
 import Application from "../models/application.model";
 import BillingInvoice from "../models/billing.model";
 import { notificationService } from "./notification.service";
+import { claimPaymentSuccess, claimInvoicePaid } from "./paymentProcessing.service";
+import SubscriptionPlan from "../models/subscriptionPlan.model";
+import PremiumFeatureUsage from "../models/premiumFeatureUsage.model";
 
 const PAYSTACK_API_BASE = "https://api.paystack.co";
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
@@ -158,40 +161,53 @@ export const paystackService = {
 
       const paymentData = response.data.data;
 
-      // Find and update transaction
       const transaction = await PaymentTransaction.findOne({ reference });
       if (!transaction) {
         throw new Error(`Transaction with reference ${reference} not found`);
       }
 
-      // Update transaction with verification data
-      transaction.status =
-        paymentData.status === "success" ? "success" : "failed";
-      transaction.verificationData = {
-        verifiedAt: new Date(),
-        verificationResponse: paymentData,
-      };
-      transaction.providerResponse = paymentData;
-      transaction.paymentMethod =
-        paymentData.authorization?.channel || "unknown";
-
       if (paymentData.status !== "success") {
+        transaction.status = "failed";
         transaction.failureReason =
           paymentData.gateway_response || "Payment unsuccessful";
+        transaction.verificationData = {
+          verifiedAt: new Date(),
+          verificationResponse: paymentData,
+        };
+        transaction.providerResponse = paymentData;
+        transaction.paymentMethod =
+          paymentData.authorization?.channel || "unknown";
+        await transaction.save();
+
+        return {
+          success: false,
+          status: paymentData.status,
+          transactionId: transaction._id,
+          transaction,
+        };
       }
 
-      await transaction.save();
+      const { claimed, idempotent, transaction: claimedTx } =
+        await claimPaymentSuccess(
+          reference,
+          paymentData,
+          paymentData.authorization?.channel || "unknown",
+        );
 
-      // Trigger subscription activation if success
-      if (transaction.status === "success") {
-        await this.activateSubscription(transaction);
+      if (!claimedTx) {
+        throw new Error(`Transaction with reference ${reference} not found`);
+      }
+
+      if (claimed) {
+        await this.processSuccessfulPaymentSideEffects(claimedTx, paymentData);
       }
 
       return {
-        success: paymentData.status === "success",
-        status: paymentData.status,
-        transactionId: transaction._id,
-        transaction,
+        success: true,
+        status: "success",
+        transactionId: claimedTx._id,
+        transaction: claimedTx,
+        idempotent: idempotent && !claimed,
       };
     } catch (error: any) {
       console.error("Paystack verify payment error:", error.message);
@@ -243,10 +259,14 @@ export const paystackService = {
    */
   async handleChargeSuccess(data: any) {
     try {
-      const { reference, customer, amount } = data;
+      const { reference } = data;
 
-      // Find transaction
-      const transaction = await PaymentTransaction.findOne({ reference });
+      const { claimed, idempotent, transaction } = await claimPaymentSuccess(
+        reference,
+        data,
+        data.authorization?.channel || "card",
+      );
+
       if (!transaction) {
         console.warn(
           `Transaction with reference ${reference} not found during webhook`,
@@ -254,175 +274,160 @@ export const paystackService = {
         return { handled: false };
       }
 
-      // Verify idempotency: only update if status is not already success
-      if (transaction.status === "success") {
-        console.log(`Transaction ${reference} already processed`);
-        return { handled: true, idempotent: true };
+      if (!claimed) {
+        return { handled: true, idempotent, reference, amount: data.amount };
       }
 
-      // Update transaction
-      transaction.status = "success";
-      transaction.verificationData = {
-        verifiedAt: new Date(),
-        verificationResponse: data,
-      };
-      transaction.paymentMethod = data.authorization?.channel || "card";
-
-      await transaction.save();
-
-      // Save Paystack authorization code for recurring partner billing if institutionId is in metadata
-      const institutionId = transaction.metadata?.institutionId || transaction.metadata?.customData?.institutionId;
-      const authorizationCode = data.authorization?.authorization_code;
-      if (institutionId && authorizationCode) {
-        const inst = await Institution.findById(institutionId);
-        if (inst) {
-          inst.paystackAuthorizationCode = authorizationCode;
-          await inst.save();
-          console.log(`[PaystackService] Saved recurring payment token for institution ${inst.name}`);
-        }
-      }
-
-      // Handle client connection fee payment activation
-      const isClientConnectionFee = 
-        transaction.metadata?.isClientConnectionFee || 
-        transaction.metadata?.customData?.isClientConnectionFee ||
-        data.metadata?.customData?.isClientConnectionFee;
-
-      if (isClientConnectionFee) {
-        const appId = 
-          transaction.applicationId || 
-          transaction.metadata?.applicationId || 
-          transaction.metadata?.customData?.applicationId ||
-          data.metadata?.applicationId ||
-          data.metadata?.customData?.applicationId;
-
-        if (appId) {
-          const application = await Application.findById(appId);
-          if (application) {
-            application.status = "Pending";
-            await application.save();
-
-            // Log client connection fee payment settlement in the compliance audit ledger
-            await auditLogger.log({
-              adminId: transaction.userId.toString(),
-              action: "PAYMENT_VERIFIED",
-              targetId: application._id as any,
-              details: `Settled client connection fee of GH₵ ${transaction.amount} via Paystack. Reference: ${transaction.reference}. Application ${application._id} is now set to "Pending" and formally submitted to the partner review desk.`,
-            });
-
-            // Create standard ledger record
-            const ledgerRef = `CONN-PAYSTACK-${transaction.reference}`;
-            const existingLedger = await Transaction.findOne({ reference: ledgerRef });
-            if (!existingLedger) {
-              await Transaction.create({
-                userId: transaction.userId,
-                applicationId: application._id,
-                description: transaction.description || `Client Connection Agent Fee Settlement via Paystack`,
-                amount: transaction.amount,
-                type: "debit",
-                category: "ConnectionFee",
-                status: "Completed",
-                reference: ledgerRef,
-                date: new Date(),
-              });
-            }            // Notify user of successful submission
-            const user = await User.findById(transaction.userId);
-            const product = await FinancialProduct.findById(application.productId).populate("institutionId");
-            const institutionName = (product?.institutionId as any)?.name || "Partner Institution";
-            const productName = product?.name || "Financial Product";
-
-            if (user?._id) {
-              await notificationService.notifyUser({
-                userId: user._id.toString(),
-                type: "ApplicationReview",
-                title: "Application Submitted Successfully",
-                message: `Your connection fee of GH₵ ${transaction.amount.toLocaleString()} was verified successfully. Your application for ${productName} has been submitted to ${institutionName} for review.`,
-                targetId: application._id.toString(),
-                email: true,
-                sms: true,
-              });
-            }
-
-            // Notify B2B partner institution admins/staff of the new application
-            try {
-              if (product && product.institutionId) {
-                const institutionUsers = await User.find({
-                  institutionId: (product.institutionId as any)._id || product.institutionId,
-                  role: { $in: ["InstitutionAdmin", "InstitutionStaff", "InsuranceAdmin", "InsuranceStaff", "BNPLAdmin", "BNPLStaff"] },
-                });
-                
-                for (const instUser of institutionUsers) {
-                  await notificationService.createNotification({
-                    userId: instUser._id.toString(),
-                    type: "ApplicationReview",
-                    title: "New Application Received",
-                    message: `A new application of GH₵ ${application.amount.toLocaleString()} has been submitted for ${productName} by ${user?.firstName || "Applicant"} ${user?.lastName || ""} and is awaiting review.`,
-                    targetId: application._id.toString(),
-                  });
-                }
-                console.log(`[PaystackService] Notified ${institutionUsers.length} B2B users of institution ${product.institutionId} for application ${application._id}`);
-              }
-            } catch (err: any) {
-              console.error("[PaystackService] Failed to send B2B notifications:", err.message);
-            }
-
-            console.log(`[PaystackService] Successfully activated application ${application._id} following connection fee payment.`);
-          } else {
-            console.warn(`[PaystackService] Application ${appId} not found for connection fee activation`);
-          }
-        }
-      }
-      // Handle invoice payment activation
-      const isInvoicePayment =
-        transaction.metadata?.isInvoicePayment ||
-        transaction.metadata?.customData?.isInvoicePayment ||
-        data.metadata?.customData?.isInvoicePayment;
-
-      if (isInvoicePayment) {
-        const invoiceId =
-          transaction.metadata?.invoiceId ||
-          transaction.metadata?.customData?.invoiceId ||
-          data.metadata?.invoiceId ||
-          data.metadata?.customData?.invoiceId;
-
-        if (invoiceId) {
-          const invoice = await BillingInvoice.findById(invoiceId);
-          if (invoice && invoice.status !== "Paid") {
-            invoice.status = "Paid";
-            invoice.paidAt = new Date();
-            await invoice.save();
-
-            // Create standard ledger record
-            const ledgerRef = `INV-PAY-${invoice.reference}`;
-            const existingLedger = await Transaction.findOne({ reference: ledgerRef });
-            if (!existingLedger) {
-              await Transaction.create({
-                userId: transaction.userId,
-                institutionId: invoice.institutionId,
-                description: invoice.description || `Platform invoice settlement (${invoice.reference})`,
-                amount: invoice.amount,
-                type: "debit",
-                category: "Subscription",
-                status: "Completed",
-                reference: ledgerRef,
-                date: new Date(),
-              });
-            }
-
-            console.log(`[PaystackService] Successfully settled invoice ${invoice._id} following payment.`);
-          }
-        }
-      }
-
-      // Trigger subscription activation
-      await this.activateSubscription(transaction);
+      await this.processSuccessfulPaymentSideEffects(transaction, data);
 
       console.log(`Payment successful: ${reference}`);
-
-      return { handled: true, reference, amount };
+      return { handled: true, reference, amount: data.amount };
     } catch (error: any) {
       console.error("Handle charge success error:", error.message);
       throw new Error(`Failed to handle charge success: ${error.message}`);
+    }
+  },
+
+  /**
+   * Shared post-payment side effects (idempotent where possible)
+   */
+  async processSuccessfulPaymentSideEffects(transaction: any, data: any) {
+    const reference = transaction.reference;
+
+    const institutionId =
+      transaction.metadata?.institutionId ||
+      transaction.metadata?.customData?.institutionId;
+    const authorizationCode = data.authorization?.authorization_code;
+    if (institutionId && authorizationCode) {
+      await Institution.findByIdAndUpdate(institutionId, {
+        paystackAuthorizationCode: authorizationCode,
+      });
+    }
+
+    const isClientConnectionFee =
+      transaction.metadata?.isClientConnectionFee ||
+      transaction.metadata?.customData?.isClientConnectionFee ||
+      data.metadata?.customData?.isClientConnectionFee;
+
+    if (isClientConnectionFee) {
+      await this.activateConnectionFeeApplication(transaction, data);
+    }
+
+    const isInvoicePayment =
+      transaction.metadata?.isInvoicePayment ||
+      transaction.metadata?.customData?.isInvoicePayment ||
+      data.metadata?.customData?.isInvoicePayment;
+
+    if (isInvoicePayment) {
+      const invoiceId =
+        transaction.metadata?.invoiceId ||
+        transaction.metadata?.customData?.invoiceId ||
+        data.metadata?.invoiceId ||
+        data.metadata?.customData?.invoiceId;
+
+      if (invoiceId) {
+        const invoice = await claimInvoicePaid(invoiceId);
+        if (invoice) {
+          const ledgerRef = `INV-PAY-${invoice.reference}`;
+          const existingLedger = await Transaction.findOne({ reference: ledgerRef });
+          if (!existingLedger) {
+            await Transaction.create({
+              userId: transaction.userId,
+              institutionId: invoice.institutionId,
+              description: invoice.description || `Platform invoice settlement (${invoice.reference})`,
+              amount: invoice.amount,
+              type: "debit",
+              category: "Subscription",
+              status: "Completed",
+              reference: ledgerRef,
+              date: new Date(),
+            });
+          }
+        }
+      }
+    }
+
+    await this.activateSubscription(transaction);
+  },
+
+  async activateConnectionFeeApplication(transaction: any, data: any) {
+    const appId =
+      transaction.applicationId ||
+      transaction.metadata?.applicationId ||
+      transaction.metadata?.customData?.applicationId ||
+      data.metadata?.applicationId ||
+      data.metadata?.customData?.applicationId;
+
+    if (!appId) return;
+
+    const application = await Application.findOneAndUpdate(
+      { _id: appId, status: { $ne: "Pending" } },
+      { $set: { status: "Pending" } },
+      { new: true },
+    );
+    if (!application) return;
+
+    await auditLogger.log({
+      adminId: transaction.userId.toString(),
+      action: "PAYMENT_VERIFIED",
+      targetId: application._id as any,
+      details: `Settled client connection fee of GH₵ ${transaction.amount} via Paystack. Reference: ${transaction.reference}.`,
+    });
+
+    const ledgerRef = `CONN-PAYSTACK-${transaction.reference}`;
+    const existingLedger = await Transaction.findOne({ reference: ledgerRef });
+    if (!existingLedger) {
+      await Transaction.create({
+        userId: transaction.userId,
+        applicationId: application._id,
+        description: transaction.description || `Client Connection Agent Fee Settlement via Paystack`,
+        amount: transaction.amount,
+        type: "debit",
+        category: "ConnectionFee",
+        status: "Completed",
+        reference: ledgerRef,
+        date: new Date(),
+      });
+    }
+
+    const user = await User.findById(transaction.userId);
+    const product = await FinancialProduct.findById(application.productId).populate("institutionId");
+    const institutionName = (product?.institutionId as any)?.name || "Partner Institution";
+    const productName = product?.name || "Financial Product";
+
+    if (user?._id) {
+      await notificationService.notifyUser({
+        userId: user._id.toString(),
+        type: "ApplicationReview",
+        title: "Application Submitted Successfully",
+        message: `Your connection fee of GH₵ ${transaction.amount.toLocaleString()} was verified successfully. Your application for ${productName} has been submitted to ${institutionName} for review.`,
+        targetId: application._id.toString(),
+        email: true,
+        sms: true,
+      });
+    }
+
+    try {
+      if (product?.institutionId) {
+        const institutionUsers = await User.find({
+          institutionId: (product.institutionId as any)._id || product.institutionId,
+          role: { $in: ["InstitutionAdmin", "InstitutionStaff", "InsuranceAdmin", "InsuranceStaff", "BNPLAdmin", "BNPLStaff"] },
+        });
+
+        await Promise.all(
+          institutionUsers.map((instUser) =>
+            notificationService.createNotification({
+              userId: instUser._id.toString(),
+              type: "ApplicationReview",
+              title: "New Application Received",
+              message: `A new application of GH₵ ${application.amount.toLocaleString()} has been submitted for ${productName} by ${user?.firstName || "Applicant"} ${user?.lastName || ""} and is awaiting review.`,
+              targetId: application._id.toString(),
+            }),
+          ),
+        );
+      }
+    } catch (err: any) {
+      console.error("[PaystackService] Failed to send B2B notifications:", err.message);
     }
   },
 
@@ -452,22 +457,14 @@ export const paystackService = {
 
       await transaction.save();
 
+      // Do not auto-blacklist products on a single failed payment — log only
       if (transaction.productId) {
-        const product = await FinancialProduct.findById(transaction.productId);
-        if (product && !product.isBlacklisted) {
-          product.isBlacklisted = true;
-          product.blacklistReason =
-            transaction.failureReason || "Failed payment";
-          product.blacklistedAt = new Date();
-          await product.save();
-
-          await auditLogger.log({
-            adminId: "system",
-            action: "AutoBlacklistProduct",
-            targetId: product._id as any,
-            details: `Automatically blacklisted product ${product.name} after failed payment ${reference}`,
-          });
-        }
+        await auditLogger.log({
+          adminId: "system",
+          action: "PaymentFailed",
+          targetId: transaction.productId.toString(),
+          details: `Payment ${reference} failed: ${transaction.failureReason}. Product was NOT auto-blacklisted.`,
+        });
       }
 
       console.log(`Payment failed: ${reference}`);
@@ -546,10 +543,10 @@ export const paystackService = {
 
       const isSubscription =
         transaction.metadata?.isSubscription ||
+        transaction.metadata?.customData?.isSubscription ||
         transaction.description?.toLowerCase().includes("subscription");
       if (!isSubscription) return;
 
-      // Verify if a ledger transaction for this reference already exists to prevent duplicate actions
       const ledgerRef = `SUB-PAYSTACK-${transaction.reference}`;
       const existingLedger = await Transaction.findOne({ reference: ledgerRef });
       if (existingLedger) {
@@ -557,40 +554,81 @@ export const paystackService = {
         return;
       }
 
+      const planId =
+        transaction.metadata?.planId ||
+        transaction.metadata?.customData?.planId;
+
+      const billingCycle =
+        transaction.metadata?.billingCycle ||
+        transaction.metadata?.customData?.billingCycle ||
+        "monthly";
+
+      const extensionMs =
+        billingCycle === "yearly"
+          ? 365 * 24 * 60 * 60 * 1000
+          : 30 * 24 * 60 * 60 * 1000;
+
       const user = await User.findById(transaction.userId);
-      if (user) {
-        // Update user platform metrics
-        user.subscriptionFeePaid = true;
-        const currentExpiry = user.nextSubscriptionDate ? new Date(user.nextSubscriptionDate) : null;
-        if (currentExpiry && currentExpiry > new Date()) {
-          user.nextSubscriptionDate = new Date(currentExpiry.getTime() + 30 * 24 * 60 * 60 * 1000);
-        } else {
-          user.nextSubscriptionDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        }
-        await user.save();
-
-        // Create standard ledger record
-        await Transaction.create({
-          userId: transaction.userId,
-          description: transaction.description || "Platform Access Fee Settlement via Paystack",
-          amount: transaction.amount,
-          type: "debit",
-          category: "Subscription",
-          status: "Completed",
-          reference: ledgerRef,
-          date: new Date(),
-        });
-
-        await auditLogger.log({
-          adminId: user._id.toString(),
-          action: "PAYMENT_VERIFIED",
-          details: `Settled monthly platform subscription of GH₵ ${transaction.amount} via Paystack. Reference: ${transaction.reference}`,
-        });
-
-        console.log(`[SubscriptionBilling] Successfully activated platform subscription for user ${user._id}`);
-      } else {
+      if (!user) {
         console.warn(`[SubscriptionBilling] User not found for ID ${transaction.userId}`);
+        return;
       }
+
+      const currentExpiry = user.subscriptionEndDate
+        ? new Date(user.subscriptionEndDate)
+        : null;
+      const baseDate =
+        currentExpiry && currentExpiry > new Date() ? currentExpiry : new Date();
+
+      const updatePayload: Record<string, unknown> = {
+        subscriptionFeePaid: true,
+        nextSubscriptionDate: new Date(baseDate.getTime() + extensionMs),
+        subscriptionStartDate: user.subscriptionStartDate || new Date(),
+        subscriptionEndDate: new Date(baseDate.getTime() + extensionMs),
+      };
+
+      if (planId) {
+        updatePayload.subscriptionPlanId = planId;
+        const plan = await SubscriptionPlan.findById(planId);
+        if (plan) {
+          const features = [
+            "creditMonitoring", "eligibilityChecker", "advisorAccess", "fraudProtection",
+            "investmentInsights", "businessTools", "educationCourses", "debtDashboard", "vipConcierge",
+          ];
+          await Promise.all(
+            features
+              .filter((f) => (plan as any)[f])
+              .map((feature) =>
+                PremiumFeatureUsage.updateOne(
+                  { userId: user._id, feature },
+                  { userId: user._id, subscriptionPlanId: planId, feature, isEnabled: true },
+                  { upsert: true },
+                ),
+              ),
+          );
+        }
+      }
+
+      await User.findByIdAndUpdate(user._id, { $set: updatePayload });
+
+      await Transaction.create({
+        userId: transaction.userId,
+        description: transaction.description || "Platform Access Fee Settlement via Paystack",
+        amount: transaction.amount,
+        type: "debit",
+        category: "Subscription",
+        status: "Completed",
+        reference: ledgerRef,
+        date: new Date(),
+      });
+
+      await auditLogger.log({
+        adminId: user._id.toString(),
+        action: "PAYMENT_VERIFIED",
+        details: `Settled subscription of GH₵ ${transaction.amount} via Paystack. Reference: ${transaction.reference}${planId ? ` Plan: ${planId}` : ""}`,
+      });
+
+      console.log(`[SubscriptionBilling] Successfully activated subscription for user ${user._id}`);
     } catch (error: any) {
       console.error("[SubscriptionBilling] Error activating subscription:", error.message);
     }

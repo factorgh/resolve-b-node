@@ -3,8 +3,6 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const R2_BUCKET = process.env.R2_BUCKET || '';
 
-// Automatically strip trailing bucket names or slashes from R2_ENDPOINT if present
-// (e.g. converting "https://...r2.cloudflarestorage.com/resolvebridge" to "https://...r2.cloudflarestorage.com")
 const rawEndpoint = process.env.R2_ENDPOINT || '';
 const cleanEndpoint = rawEndpoint.replace(new RegExp(`\\/${R2_BUCKET}$`), '').replace(/\/$/, '');
 
@@ -16,6 +14,8 @@ const s3Client = new S3Client({
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
   },
 });
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 export const storageService = {
   uploadFile: async (file: Buffer, fileName: string, contentType: string) => {
@@ -30,10 +30,13 @@ export const storageService = {
       await s3Client.send(command);
       return `${process.env.R2_PUBLIC_URL}/${fileName}`;
     } catch (error: any) {
-      console.warn(`[R2 Storage Service] PutObject failed: ${error.message}.`);
-      console.warn(`[R2 Storage Service] Falling back to mock URL for local sandbox testing because R2 credentials or endpoints are invalid.`);
-      
-      const publicUrl = process.env.R2_PUBLIC_URL || 'https://pub-35bea1efbb5f4c8aa7100b14faba69dd.r2.dev';
+      if (isProduction) {
+        console.error(`[R2 Storage Service] Upload failed: ${error.message}`);
+        throw new Error('File upload failed. Storage service is unavailable.');
+      }
+
+      console.warn(`[R2 Storage Service] PutObject failed: ${error.message}. Using dev fallback URL.`);
+      const publicUrl = process.env.R2_PUBLIC_URL || 'https://pub-dev.resolvebridge.local';
       return `${publicUrl}/${fileName}`;
     }
   },
@@ -48,7 +51,7 @@ export const storageService = {
       return getSignedUrl(s3Client, command, { expiresIn: 3600 });
     } catch (error: any) {
       console.error('R2 Presigned URL Error:', error);
-      throw new Error(`Failed to get download URL: ${error.message}`);
+      throw new Error('Failed to generate secure download URL');
     }
   },
 
@@ -58,11 +61,10 @@ export const storageService = {
         Bucket: R2_BUCKET,
         Key: fileName,
       });
-
       await s3Client.send(command);
     } catch (error: any) {
       console.error('R2 Delete Error:', error);
-      throw new Error(`Failed to delete file from R2: ${error.message}`);
+      throw error;
     }
-  }
+  },
 };

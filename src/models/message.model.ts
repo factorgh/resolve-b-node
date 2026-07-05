@@ -25,4 +25,8 @@ const MessageSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+MessageSchema.index({ institutionId: 1, createdAt: -1 });
+MessageSchema.index({ senderId: 1, recipientId: 1, createdAt: -1 });
+MessageSchema.index({ recipientId: 1, isRead: 1 });
+
 export default mongoose.model<IMessage>('Message', MessageSchema);

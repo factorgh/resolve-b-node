@@ -5,14 +5,8 @@ import { requireRole } from "../middlewares/role.middleware";
 
 const router = Router();
 
-// Public webhook (no auth required). Use raw body to preserve Paystack signature integrity.
-router.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  paymentController.handleWebhook,
-);
+// Webhook is mounted in app.ts before JSON parser (raw body required)
 
-// Protected routes (require authentication)
 router.post("/initiate", authMiddleware, paymentController.initiatePayment);
 router.get("/callback", paymentController.handleCallback);
 router.get(
@@ -27,7 +21,6 @@ router.post(
   paymentController.retryPayment,
 );
 
-// Admin routes
 router.get(
   "/admin/transactions",
   authMiddleware,

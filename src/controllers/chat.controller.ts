@@ -4,6 +4,7 @@ import User from "../models/user.model";
 import Application from "../models/application.model";
 import FinancialProduct from "../models/product.model";
 import { responseFactory } from "../utils/responseFactory";
+import { notificationService } from "../services/notification.service";
 
 export const chatController = {
   // Send a message
@@ -86,6 +87,19 @@ export const chatController = {
       const message = new Message(messagePayload);
 
       await message.save();
+
+      // If the message is sent to a Customer from a Partner/Staff/Admin, send an SMS alert
+      if (messagePayload.recipientId && sender.role !== "Customer") {
+        const recipientUser = await User.findById(messagePayload.recipientId);
+        if (recipientUser && recipientUser.role === "Customer" && recipientUser.phoneNumber) {
+          const senderLabel = sender.role === "SuperAdmin" || sender.role === "Admin" ? "Resolve Support" : "Your Partner Desk";
+          const textPreview = text.trim();
+          const smsMsg = `Notification: You received a new chat message from ${senderLabel} on ResolveBridge: "${textPreview.substring(0, 50)}${textPreview.length > 50 ? '...' : ''}". Visit your portal dashboard to reply.`;
+          notificationService.sendSmsNotification(recipientUser.phoneNumber, smsMsg).catch(err => {
+            console.error('Chat SMS notification failed:', err);
+          });
+        }
+      }
 
       return res.json(
         responseFactory.success(message, "Message sent successfully")

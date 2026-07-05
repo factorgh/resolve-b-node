@@ -4,12 +4,54 @@ import User from '../models/user.model';
 import Institution from '../models/institution.model';
 import { storageService } from './storage.service';
 import UserDocument from '../models/document.model';
+import { getJwtSecret, JWT_EXPIRES_IN } from '../utils/jwtConfig';
+import { sanitizeUser } from '../utils/sanitizeUser';
+import { resolveRegistrationRole } from '../utils/registerRoles';
+import { buildStorageKey } from '../utils/safeFilename';
+import { notificationService } from './notification.service';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'secret';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+function buildTokenPayload(user: InstanceType<typeof User>) {
+  return {
+    id: user._id.toString(),
+    email: user.email,
+    role: user.role,
+    institutionId: user.institutionId ? user.institutionId.toString() : undefined,
+    regionId: user.regionId ? user.regionId.toString() : undefined,
+  };
+}
+
+function buildAuthResponse(user: InstanceType<typeof User>) {
+  const accessToken = jwt.sign(buildTokenPayload(user), getJwtSecret(), {
+    expiresIn: JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+  });
+
+  return {
+    user: sanitizeUser(user),
+    accessToken,
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+/** Whitelist fields allowed during registration */
+function pickRegistrationFields(userData: Record<string, any>) {
+  const role = resolveRegistrationRole(userData.role);
+  const allowed = [
+    'email', 'firstName', 'lastName', 'phoneNumber', 'middleName', 'dateOfBirth',
+    'market', 'title', 'maritalStatus', 'gender', 'nationality', 'dependants',
+    'residentialAddress', 'city', 'mmda', 'landmark', 'employer', 'sector',
+    'occupation', 'ssnitNo', 'workAddress', 'yearsWithEmployer', 'goals',
+    'employmentStatus', 'monthlyIncome', 'loanDuration', 'idType', 'idNumber',
+    'legalName', 'registrationNumber', 'taxId', 'website', 'streetAddress', 'country',
+  ];
+  const picked: Record<string, any> = { role };
+  for (const key of allowed) {
+    if (userData[key] !== undefined) picked[key] = userData[key];
+  }
+  return picked;
+}
 
 export const authService = {
-  register: async (userData: any) => {
+  register: async (userData: Record<string, any>) => {
     const existingUser = await User.findOne({
       $or: [
         { email: userData.email },
@@ -21,59 +63,47 @@ export const authService = {
       return { success: false, message: 'User with this email or phone number already exists' };
     }
 
-    // Check if registering a partner role and create Institution first
-    if (['BankAdmin', 'BNPLAdmin', 'InsuranceAdmin'].includes(userData.role)) {
-      const instType = userData.role === 'BankAdmin' ? 'Bank' : userData.role === 'BNPLAdmin' ? 'Merchant' : 'Insurance';
+    const safeData = pickRegistrationFields(userData);
+
+    if (['BankAdmin', 'BNPLAdmin', 'InsuranceAdmin'].includes(safeData.role)) {
+      const instType = safeData.role === 'BankAdmin' ? 'Bank' : safeData.role === 'BNPLAdmin' ? 'Merchant' : 'Insurance';
       const inst = await Institution.create({
-        name: userData.legalName || 'New Institution Partner',
-        legalName: userData.legalName || 'New Institution Partner',
+        name: safeData.legalName || 'New Institution Partner',
+        legalName: safeData.legalName || 'New Institution Partner',
         type: instType,
-        registrationNumber: userData.registrationNumber || 'PENDING',
-        taxId: userData.taxId || 'PENDING',
-        email: userData.email,
-        phoneNumber: userData.phoneNumber,
-        website: userData.website || '',
-        streetAddress: userData.streetAddress || 'PENDING',
-        city: userData.city || 'PENDING',
-        state: userData.city || 'PENDING',
-        country: userData.country || 'Ghana',
+        registrationNumber: safeData.registrationNumber || 'PENDING',
+        taxId: safeData.taxId || 'PENDING',
+        email: safeData.email,
+        phoneNumber: safeData.phoneNumber,
+        website: safeData.website || '',
+        streetAddress: safeData.streetAddress || 'PENDING',
+        city: safeData.city || 'PENDING',
+        state: safeData.city || 'PENDING',
+        country: safeData.country || 'Ghana',
         isActive: true,
         isVerified: false
       });
-      userData.institutionId = inst._id;
+      safeData.institutionId = inst._id;
     }
 
     const hashedPassword = await bcrypt.hash(userData.password, 10);
-    
-    console.log('Registering user with data:', JSON.stringify(userData, null, 2));
 
     const user = await User.create({
-      ...userData,
+      ...safeData,
       password: hashedPassword,
       isActive: true,
     });
 
-    const accessToken = jwt.sign(
-      { 
-        id: user._id.toString(), 
-        email: user.email,
-        role: user.role,
-        institutionId: user.institutionId ? user.institutionId.toString() : undefined
-      }, 
-      JWT_SECRET, 
-      {
-        expiresIn: JWT_EXPIRES_IN as any,
-      }
-    );
+    if (user.phoneNumber) {
+      const welcomeMsg = `Welcome to ResolveBridge, ${user.firstName}! Your financial hub account has been successfully created. Log in at resolvebridge.com to manage and explore your facilities.`;
+      notificationService.sendSmsNotification(user.phoneNumber, welcomeMsg).catch(err => {
+        console.error('Welcome SMS failed to send:', err);
+      });
+    }
 
     return {
       success: true,
-      data: {
-        user,
-        accessToken,
-        refreshToken: 'mock-refresh-token-' + Date.now(),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-      }
+      data: buildAuthResponse(user),
     };
   },
 
@@ -83,10 +113,14 @@ export const authService = {
         { email: identifier },
         { phoneNumber: identifier }
       ]
-    });
+    }).select('+password');
 
     if (!user) {
       return { success: false, message: 'Invalid credentials' };
+    }
+
+    if (!user.isActive) {
+      return { success: false, message: 'Your account has been deactivated. Please contact support.' };
     }
 
     const isMatch = await bcrypt.compare(pass, user.password);
@@ -94,7 +128,6 @@ export const authService = {
       return { success: false, message: 'Invalid credentials' };
     }
 
-    // Enforce partner account verification check
     if (['BankAdmin', 'BNPLAdmin', 'InsuranceAdmin'].includes(user.role) && user.institutionId) {
       const inst = await Institution.findById(user.institutionId);
       if (inst && !inst.isVerified) {
@@ -105,39 +138,30 @@ export const authService = {
       }
     }
 
-    const accessToken = jwt.sign(
-      { 
-        id: user._id.toString(), 
-        email: user.email,
-        role: user.role,
-        institutionId: user.institutionId ? user.institutionId.toString() : undefined
-      }, 
-      JWT_SECRET, 
-      {
-        expiresIn: JWT_EXPIRES_IN as any,
-      }
-    );
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    if (user.phoneNumber) {
+      const formattedDate = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+      const loginAlertMsg = `Security Alert: A new login was detected on your ResolveBridge account on ${formattedDate} (UTC). If this was not you, please contact support immediately.`;
+      notificationService.sendSmsNotification(user.phoneNumber, loginAlertMsg).catch(err => {
+        console.error('Login SMS alert failed:', err);
+      });
+    }
 
     return {
       success: true,
-      data: {
-        user,
-        accessToken,
-        refreshToken: 'mock-refresh-token-' + Date.now(),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-      }
+      data: buildAuthResponse(user),
     };
   },
 
   getMe: async (id: string) => {
-    return User.findById(id);
+    return User.findById(id).select('-password');
   },
 
-  verifyKyc: async (userId: string, files: any[]) => {
-    const documentUrls: string[] = [];
-
+  verifyKyc: async (userId: string, files: Express.Multer.File[]) => {
     for (const file of files) {
-      const fileName = `kyc/${userId}/${Date.now()}-${file.originalname}`;
+      const fileName = buildStorageKey('kyc', userId, file.originalname);
       const url = await storageService.uploadFile(file.buffer, fileName, file.mimetype);
       
       await UserDocument.create({
@@ -146,8 +170,6 @@ export const authService = {
         documentUrl: url,
         isVerified: false,
       });
-
-      documentUrls.push(url);
     }
 
     await User.findByIdAndUpdate(userId, { kycStatus: 'Submitted' });

@@ -4,6 +4,7 @@ import SubscriptionPlan from "../models/subscriptionPlan.model";
 import PremiumFeatureUsage from "../models/premiumFeatureUsage.model";
 import User from "../models/user.model";
 import { auditLogger } from "../utils/auditLogger";
+import { paystackService } from "../services/paystack.service";
 
 export const subscriptionController = {
   // Get all active subscription plans
@@ -178,7 +179,7 @@ export const subscriptionController = {
   // Upgrade user subscription (payment will be processed separately)
   upgradeSubscription: async (req: any, res: Response) => {
     try {
-      const { planId } = req.body;
+      const { planId, billingCycle = "monthly" } = req.body;
 
       const plan = await SubscriptionPlan.findById(planId);
       if (!plan) {
@@ -187,65 +188,54 @@ export const subscriptionController = {
           .json(responseFactory.notFound("Subscription plan not found"));
       }
 
-      const user = await User.findByIdAndUpdate(
-        req.user.id,
-        {
-          subscriptionPlanId: planId,
-          subscriptionStartDate: new Date(),
-          subscriptionEndDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        },
-        { new: true }
-      );
-
+      const user = await User.findById(req.user.id);
       if (!user) {
-        return res
-          .status(404)
-          .json(responseFactory.notFound("User not found"));
+        return res.status(404).json(responseFactory.notFound("User not found"));
       }
 
-      // Create feature usage records for all enabled features
-      const features = [
-        "creditMonitoring",
-        "eligibilityChecker",
-        "advisorAccess",
-        "fraudProtection",
-        "investmentInsights",
-        "businessTools",
-        "educationCourses",
-        "debtDashboard",
-        "vipConcierge",
-      ];
+      const amountGhs =
+        billingCycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
 
-      for (const feature of features) {
-        const isEnabled = (plan as any)[feature];
-        if (isEnabled) {
-          await PremiumFeatureUsage.updateOne(
-            { userId: req.user.id, feature },
-            {
-              userId: req.user.id,
-              subscriptionPlanId: planId,
-              feature,
-              isEnabled: true,
-            },
-            { upsert: true }
-          );
-        }
+      if (amountGhs <= 0) {
+        return res.status(400).json(responseFactory.error("Invalid plan price"));
       }
+
+      const reference = `SUB-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+
+      const payment = await paystackService.initiatePayment({
+        email: user.email,
+        amount: Math.round(amountGhs * 100),
+        reference,
+        userId: req.user.id,
+        description: `ResolveBridge ${plan.name} Subscription (${billingCycle})`,
+        metadata: {
+          isSubscription: true,
+          planId: plan._id.toString(),
+          billingCycle,
+        },
+        callbackUrl: `${clientUrl}/portal/subscriptions?payment=success&reference=${reference}`,
+      });
 
       await auditLogger.log({
         adminId: req.user.id,
-        action: "UpgradeSubscription",
+        action: "InitiateSubscriptionUpgrade",
         targetId: user._id as any,
-        details: `User upgraded to ${plan.name} subscription plan`,
+        details: `Initiated Paystack payment for ${plan.name} (${billingCycle}) — ref ${reference}`,
         ipAddress: req.ip,
         userAgent: req.headers["user-agent"],
       });
 
       return res.json(
         responseFactory.success(
-          user,
-          "Subscription upgraded successfully"
-        )
+          {
+            authorizationUrl: payment.authorizationUrl,
+            reference: payment.reference,
+            amount: amountGhs,
+            planId: plan._id,
+          },
+          "Payment initiated — complete checkout to activate your plan",
+        ),
       );
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));

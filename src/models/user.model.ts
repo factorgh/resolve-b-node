@@ -64,7 +64,7 @@ const UserSchema: Schema = new Schema(
     phoneNumber: { type: String, required: true, unique: true },
     firstName: { type: String, required: true },
     lastName: { type: String, required: true },
-    password: { type: String, required: true },
+    password: { type: String, required: true, select: false },
     middleName: { type: String },
     dateOfBirth: { type: Date },
     nationalId: { type: String },
@@ -116,5 +116,9 @@ const UserSchema: Schema = new Schema(
   },
   { timestamps: true }
 );
+
+UserSchema.index({ institutionId: 1, role: 1 });
+UserSchema.index({ regionId: 1 });
+UserSchema.index({ role: 1, isActive: 1 });
 
 export default mongoose.model<IUser>('User', UserSchema);

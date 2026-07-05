@@ -3,8 +3,10 @@ import { responseFactory } from '../utils/responseFactory';
 import { authService } from '../services/auth.service';
 import { z } from 'zod';
 import User from '../models/user.model';
+import Otp from '../models/otp.model';
 import bcrypt from 'bcryptjs';
 import { auditLogger } from '../utils/auditLogger';
+import { notificationService } from '../services/notification.service';
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -37,7 +39,7 @@ const registerSchema = z.object({
   loanDuration: z.string().optional(),
   idType: z.string().optional(),
   idNumber: z.string().optional(),
-}).passthrough();
+});
 
 const loginSchema = z.object({
   identifier: z.string().min(1),
@@ -97,7 +99,8 @@ export const authController = {
       if (!user) {
         return res.status(404).json(responseFactory.notFound('User not found'));
       }
-      return res.json(responseFactory.success(user, 'User profile fetched successfully'));
+      const { password: _, ...safeUser } = user.toObject();
+      return res.json(responseFactory.success(safeUser, 'User profile fetched successfully'));
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message || 'Internal server error'));
     }
@@ -137,6 +140,14 @@ export const authController = {
       user.mustResetPassword = false;
       await user.save();
 
+      // Send password changed SMS alert
+      if (user.phoneNumber) {
+        const resetMsg = `Security Alert: Your ResolveBridge portal login password has been changed successfully. If you did not request this change, please contact support immediately.`;
+        notificationService.sendSmsNotification(user.phoneNumber, resetMsg).catch(err => {
+          console.error('Password reset SMS alert failed:', err);
+        });
+      }
+
       // Log action to compliance ledger
       await auditLogger.log({
         adminId: userId,
@@ -149,6 +160,55 @@ export const authController = {
 
       console.log(`[B2B-AuthSecurity] Success: Password reset completed for user ${user.email}`);
       return res.json(responseFactory.success(null, 'Password changed successfully. You can now access your dashboard.'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message || 'Internal server error'));
+    }
+  },
+
+  sendOtp: async (req: Request, res: Response) => {
+    try {
+      const { phoneNumber } = req.body;
+      if (!phoneNumber) {
+        return res.status(400).json(responseFactory.error('Phone number is required'));
+      }
+
+      // Generate 6-digit random code
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      
+      // Expire in 5 minutes
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+      // Save OTP to DB (replace any previous pending OTP for this number)
+      await Otp.deleteMany({ phoneNumber });
+      await Otp.create({ phoneNumber, code, expiresAt });
+
+      // Send SMS
+      const smsMessage = `Your ResolveBridge verification access code is: ${code}. Valid for 5 minutes.`;
+      await notificationService.sendSmsNotification(phoneNumber, smsMessage, false);
+
+      console.log(`[OTP Engine] Generated code ${code} for phone ${phoneNumber}`);
+      return res.json(responseFactory.success(null, 'Verification code sent successfully'));
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message || 'Internal server error'));
+    }
+  },
+
+  verifyOtp: async (req: Request, res: Response) => {
+    try {
+      const { phoneNumber, code } = req.body;
+      if (!phoneNumber || !code) {
+        return res.status(400).json(responseFactory.error('Phone number and code are required'));
+      }
+
+      const match = await Otp.findOne({ phoneNumber, code });
+      if (!match) {
+        return res.status(400).json(responseFactory.error('Invalid or expired verification code'));
+      }
+
+      // Valid OTP! Delete it so it cannot be reused
+      await Otp.deleteOne({ _id: match._id });
+
+      return res.json(responseFactory.success(null, 'Phone number verified successfully'));
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message || 'Internal server error'));
     }

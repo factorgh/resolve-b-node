@@ -53,6 +53,9 @@ const FinancialProductSchema: Schema = new Schema(
   { timestamps: true },
 );
 
+FinancialProductSchema.index({ institutionId: 1, isActive: 1 });
+FinancialProductSchema.index({ productType: 1, isActive: 1, isBlacklisted: 1 });
+
 export default mongoose.model<IFinancialProduct>(
   "FinancialProduct",
   FinancialProductSchema,

@@ -31,4 +31,8 @@ const TransactionSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+TransactionSchema.index({ userId: 1, date: -1 });
+TransactionSchema.index({ institutionId: 1, date: -1 });
+TransactionSchema.index({ applicationId: 1 });
+
 export default mongoose.model<ITransaction>('Transaction', TransactionSchema);

@@ -122,7 +122,7 @@ export const notificationService = {
     }
   },
 
-  sendSmsNotification: async (phone: string, message: string) => {
+  sendSmsNotification: async (phone: string, message: string, isOtp = false) => {
     const mNotifyKey = process.env.MNOTIFY || "";
     if (mNotifyKey) {
       try {
@@ -133,13 +133,19 @@ export const notificationService = {
           finalPhone = '233' + formattedPhone.substring(1);
         }
 
+        const payload: Record<string, any> = {
+          recipient: [finalPhone],
+          sender: senderId,
+          message: message,
+        };
+
+        if (isOtp) {
+          payload.sms_type = "otp";
+        }
+
         const response = await axios.post(
           `https://api.mnotify.com/api/sms/quick?key=${mNotifyKey}`,
-          {
-            recipient: [finalPhone],
-            sender_id: senderId,
-            message: message,
-          },
+          payload,
           {
             headers: {
               "Content-Type": "application/json",
