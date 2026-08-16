@@ -22,6 +22,7 @@ import regionRoutes from "./routes/region.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import chatRoutes from "./routes/chat.routes";
 import subscriptionRoutes from "./routes/subscription.routes";
+import vehicleRoutes from "./routes/vehicle.routes";
 import { paymentController } from "./controllers/payment.controller";
 import { payloadEncryptionMiddleware } from "./middlewares/payloadEncryption.middleware";
 import { responseFactory } from "./utils/responseFactory";
@@ -74,6 +75,7 @@ app.use("/api/v1/Payments", paymentRoutes);
 app.use("/api/v1/Regions", regionRoutes);
 app.use("/api/v1/Chat", chatRoutes);
 app.use("/api/v1/Subscriptions", subscriptionRoutes);
+app.use("/api/v1/Vehicles", vehicleRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({

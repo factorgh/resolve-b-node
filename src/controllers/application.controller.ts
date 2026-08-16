@@ -10,6 +10,8 @@ import Institution from "../models/institution.model";
 import { auditLogger } from "../utils/auditLogger";
 import { notificationService } from "../services/notification.service";
 import { paystackService } from "../services/paystack.service";
+import Vehicle from "../models/vehicle.model";
+import { vehiclePack } from "./vehicle.controller";
 
 export const applicationController = {
   getUserApplications: async (req: any, res: Response) => {
@@ -20,6 +22,7 @@ export const applicationController = {
           path: "productId",
           populate: { path: "institutionId", select: "name logoUrl" },
         })
+        .populate("vehicleId", "make vehicleModel year customerPrice photos status")
         .sort({ createdAt: -1 });
 
       // Map to frontend expectations
@@ -38,7 +41,9 @@ export const applicationController = {
           progress:
             app.status === "PaymentPending"
               ? 10
-              : app.status === "Pending"
+              : app.status === "InfoRequested"
+                ? 40
+                : app.status === "Pending"
                 ? 25
                 : app.status === "UnderReview"
                   ? 50
@@ -56,7 +61,7 @@ export const applicationController = {
           color:
             (app.status === "Approved" || app.status === "Disbursed" || app.status === "Completed")
               ? "#10b981"
-              : (app.status === "Pending" || app.status === "UnderReview")
+              : (app.status === "Pending" || app.status === "UnderReview" || app.status === "InfoRequested")
                 ? "#2051e5"
                 : app.status === "PaymentPending"
                   ? "#f59e0b"
@@ -64,6 +69,18 @@ export const applicationController = {
                     ? "#ef4444"
                     : "#64748b",
           rejectionReason: app.rejectionReason,
+          infoRequestItems: app.infoRequestItems || [],
+          infoRequestMessage: app.infoRequestMessage || "",
+          vehicle: (app as any).vehicleId
+            ? {
+                id: (app as any).vehicleId._id || (app as any).vehicleId,
+                make: (app as any).vehicleId.make,
+                model: (app as any).vehicleId.vehicleModel,
+                year: (app as any).vehicleId.year,
+                customerPrice: (app as any).vehicleId.customerPrice,
+                photos: (app as any).vehicleId.photos || [],
+              }
+            : app.applicationData?.vehiclePack || null,
           steps: [
             {
               label: "Submitted",
@@ -129,14 +146,84 @@ export const applicationController = {
         return res.status(404).json(responseFactory.notFound("User not found"));
       }
 
+      let resolvedAmount = Number(amount);
+      let resolvedProductId = productId;
+      let resolvedVehicleId: any = undefined;
+      let resolvedData = applicationData || {};
+      const incomingVehicleId = resolvedData.vehicleId;
+
+      if (incomingVehicleId) {
+        const vehicle = await Vehicle.findById(incomingVehicleId);
+        if (!vehicle || vehicle.status !== "Listed") {
+          return res
+            .status(400)
+            .json(responseFactory.error("This vehicle is no longer available"));
+        }
+        if (
+          !vehicle.financeProductId ||
+          vehicle.financeProductId.toString() !== String(productId)
+        ) {
+          return res
+            .status(400)
+            .json(
+              responseFactory.error(
+                "This vehicle can only be financed by the recommended institution",
+              ),
+            );
+        }
+
+        const existingOpen = await Application.findOne({
+          vehicleId: vehicle._id,
+          status: { $nin: ["Rejected", "Cancelled"] },
+        });
+        if (existingOpen) {
+          return res
+            .status(400)
+            .json(responseFactory.error("This vehicle already has an active application"));
+        }
+
+        resolvedAmount = vehicle.customerPrice;
+        resolvedProductId = vehicle.financeProductId;
+        resolvedVehicleId = vehicle._id;
+        resolvedData = {
+          ...resolvedData,
+          vehicleId: vehicle._id.toString(),
+          vehiclePack: vehiclePack(vehicle),
+          minDownPaymentPercent: vehicle.minDownPaymentPercent,
+          downPaymentAmount: Math.ceil(
+            vehicle.customerPrice * (vehicle.minDownPaymentPercent / 100),
+          ),
+        };
+      }
+
       const application = await Application.create({
         userId,
-        productId,
-        amount,
+        productId: resolvedProductId,
+        amount: resolvedAmount,
         tenureMonths,
-        applicationData,
+        applicationData: resolvedData,
+        vehicleId: resolvedVehicleId,
         status: "PaymentPending",
       });
+
+      if (resolvedVehicleId) {
+        const reserved = await Vehicle.findOneAndUpdate(
+          { _id: resolvedVehicleId, status: "Listed" },
+          {
+            $set: {
+              status: "Reserved",
+              reservedByApplicationId: application._id,
+            },
+          },
+          { new: true },
+        );
+        if (!reserved) {
+          await Application.findByIdAndDelete(application._id);
+          return res
+            .status(400)
+            .json(responseFactory.error("This vehicle was just reserved by another request"));
+        }
+      }
 
       const reference = `PSK-APP-${application._id}-${Date.now()}`;
       const paymentResult = await paystackService.initiatePayment({
@@ -144,7 +231,7 @@ export const applicationController = {
         amount: 1000, // GH₵ 10.00 in kobo
         reference,
         userId,
-        productId,
+        productId: resolvedProductId,
         applicationId: application._id.toString(),
         description: "Client Connection Agent Fee",
         metadata: {
@@ -236,6 +323,7 @@ export const applicationController = {
           path: "productId",
           populate: { path: "institutionId", select: "name logoUrl" },
         })
+        .populate("vehicleId")
         .sort({ createdAt: -1 });
 
       return res.json(
@@ -252,7 +340,7 @@ export const applicationController = {
   adminReviewApplication: async (req: any, res: Response) => {
     try {
       const { id } = req.params;
-      const { status, rejectionReason } = req.body;
+      const { status, rejectionReason, infoRequestItems, infoRequestMessage } = req.body;
       const reviewerId = req.user.id;
       const { role, institutionId } = req.user;
 
@@ -263,6 +351,7 @@ export const applicationController = {
         "Disbursed",
         "Completed",
         "Cancelled",
+        "InfoRequested",
       ];
       if (!status || !allowedStatuses.includes(status)) {
         return res
@@ -310,6 +399,21 @@ export const applicationController = {
       } else if (status === "Rejected") {
         application.rejectedAt = new Date();
         application.rejectionReason = rejectionReason || "No reason provided";
+      } else if (status === "InfoRequested") {
+        const items = Array.isArray(infoRequestItems)
+          ? infoRequestItems.filter((item: string) => String(item).trim())
+          : [];
+        if (!items.length && !infoRequestMessage) {
+          return res
+            .status(400)
+            .json(responseFactory.error("List the documents or information still needed"));
+        }
+        application.infoRequestItems = items;
+        application.infoRequestMessage = infoRequestMessage || "";
+        application.infoRequestedAt = new Date();
+      } else if (status === "UnderReview") {
+        application.infoRequestItems = [];
+        application.infoRequestMessage = "";
       }
 
       // Defer connection arrears charging until partner starts processing (UnderReview or Approved or Disbursed)
@@ -382,6 +486,15 @@ export const applicationController = {
       } else if (status === "Cancelled") {
         notificationTitle = "Application Cancelled";
         notificationMessage = `Your application for ${productName} with ${institutionName} has been cancelled.`;
+      } else if (status === "InfoRequested") {
+        notificationTitle = "More information needed";
+        notificationMessage = `${institutionName} needs more documents for your ${productName} application.${
+          application.infoRequestMessage ? " " + application.infoRequestMessage : ""
+        }${
+          application.infoRequestItems?.length
+            ? " Please upload: " + application.infoRequestItems.join(", ") + "."
+            : ""
+        }`;
       }
 
       if (user?._id) {
@@ -407,19 +520,48 @@ export const applicationController = {
       // If status transitioned to Disbursed, record corresponding Transaction
       if (status === "Disbursed") {
         const product = application.productId as any;
+        const isVehicleDeal = !!application.vehicleId;
         await Transaction.create({
           userId: application.userId,
           applicationId: application._id,
           institutionId: product?.institutionId,
-          description: `Disbursement of ${product?.name || "Financial Product"}`,
+          description: isVehicleDeal
+            ? `Vehicle finance received by ResolveBridge for ${product?.name || "Vehicle Finance"}`
+            : `Disbursement of ${product?.name || "Financial Product"}`,
           amount: application.amount,
           type: "credit",
-          category: product?.productType || "Loan",
+          category: isVehicleDeal ? "VehicleFinance" : product?.productType || "Loan",
           status: "Completed",
           reference: `DISB-${application._id.toString().substring(0, 8).toUpperCase()}-${Date.now()}`,
         });
         console.log(
           `[AdminReviewApplication] Application ${application._id} Disbursed. Created transaction log.`,
+        );
+      }
+
+      if (status === "Completed" && application.vehicleId) {
+        const vehicle = await Vehicle.findById(application.vehicleId);
+        if (vehicle) {
+          vehicle.status = "Sold";
+          await vehicle.save();
+          await Transaction.create({
+            userId: application.userId,
+            applicationId: application._id,
+            institutionId: (application.productId as any)?.institutionId,
+            description: `Dealer settlement for ${vehicle.year} ${vehicle.make} ${vehicle.vehicleModel} at handover`,
+            amount: vehicle.dealerPrice,
+            type: "debit",
+            category: "VehicleSettlement",
+            status: "Completed",
+            reference: `DEALER-${application._id.toString().substring(0, 8).toUpperCase()}-${Date.now()}`,
+          });
+        }
+      }
+
+      if (["Rejected", "Cancelled"].includes(status) && application.vehicleId) {
+        await Vehicle.findOneAndUpdate(
+          { _id: application.vehicleId, reservedByApplicationId: application._id },
+          { $set: { status: "Listed" }, $unset: { reservedByApplicationId: 1 } },
         );
       }
 
@@ -483,6 +625,18 @@ export const applicationController = {
       application.reviewedAt = new Date();
       application.reviewedBy = reviewerId;
       await application.save();
+
+      if (application.vehicleId) {
+        await Vehicle.findOneAndUpdate(
+          { _id: application.vehicleId, status: "Listed" },
+          {
+            $set: {
+              status: "Reserved",
+              reservedByApplicationId: application._id,
+            },
+          },
+        );
+      }
 
       await auditLogger.log({
         adminId: reviewerId,
@@ -825,5 +979,54 @@ export const applicationController = {
     } catch (error: any) {
       return res.status(500).json(responseFactory.error(error.message));
     }
-  }
+  },
+
+  respondToInfoRequest: async (req: any, res: Response) => {
+    try {
+      const userId = req.user.id;
+      const { notes, documentIds } = req.body;
+      const application = await Application.findOne({
+        _id: req.params.id,
+        userId,
+      }).populate({
+        path: "productId",
+        populate: { path: "institutionId", select: "name" },
+      });
+
+      if (!application) {
+        return res.status(404).json(responseFactory.notFound("Application not found"));
+      }
+      if (application.status !== "InfoRequested") {
+        return res
+          .status(400)
+          .json(responseFactory.error("This application is not waiting for more information"));
+      }
+
+      application.status = "UnderReview";
+      application.applicationData = {
+        ...(application.applicationData || {}),
+        infoResponse: {
+          notes: notes || "",
+          documentIds: Array.isArray(documentIds) ? documentIds : [],
+          submittedAt: new Date().toISOString(),
+        },
+      };
+      await application.save();
+
+      const product = application.productId as any;
+      await notificationService.notifyUser({
+        userId,
+        type: "ApplicationReview",
+        title: "Documents sent",
+        message: `Your extra documents for ${product?.name || "your application"} were sent back to ${product?.institutionId?.name || "the lender"}.`,
+        targetId: application._id.toString(),
+      });
+
+      return res.json(
+        responseFactory.success(application, "Information submitted. The lender will continue review."),
+      );
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
 };

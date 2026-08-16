@@ -16,6 +16,11 @@ router.get(
   applicationController.getUserApplications,
 );
 router.post("/", authMiddleware, applicationController.createApplication);
+router.post(
+  "/:id/respond-info",
+  authMiddleware,
+  applicationController.respondToInfoRequest,
+);
 router.post("/:id/verify-token", authMiddleware, applicationController.generatePolicyVerificationToken);
 
 // Admin & Partner routes

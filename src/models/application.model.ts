@@ -18,6 +18,10 @@ export interface IApplication extends Document {
   reminderSentCount: number;
   lastReminderSentAt?: Date;
   assignedTo?: mongoose.Types.ObjectId;
+  vehicleId?: mongoose.Types.ObjectId;
+  infoRequestItems?: string[];
+  infoRequestMessage?: string;
+  infoRequestedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -41,6 +45,10 @@ const ApplicationSchema: Schema = new Schema(
     reminderSentCount: { type: Number, default: 0 },
     lastReminderSentAt: { type: Date },
     assignedTo: { type: Schema.Types.ObjectId, ref: 'User' },
+    vehicleId: { type: Schema.Types.ObjectId, ref: 'Vehicle' },
+    infoRequestItems: { type: [String], default: [] },
+    infoRequestMessage: { type: String, default: '' },
+    infoRequestedAt: { type: Date },
   },
   { timestamps: true }
 );
@@ -49,5 +57,6 @@ ApplicationSchema.index({ userId: 1, status: 1 });
 ApplicationSchema.index({ productId: 1, status: 1 });
 ApplicationSchema.index({ assignedTo: 1, status: 1 });
 ApplicationSchema.index({ flaggedForReminder: 1, status: 1 });
+ApplicationSchema.index({ vehicleId: 1, status: 1 });
 
 export default mongoose.model<IApplication>('Application', ApplicationSchema);
