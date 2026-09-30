@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import Region from '../models/region.model';
+import { seedInstitutionsData } from './seedFinancialInstitutions';
 
 const seedRegions = async () => {
   try {
@@ -25,6 +26,12 @@ const connectDB = async () => {
     const conn = await mongoose.connect(process.env.DATABASE_URL || '');
     console.log(`🍃 MongoDB Connected: ${conn.connection.host}`);
     await seedRegions();
+    await seedInstitutionsData();
+
+    // Safely remove unique constraint on phoneNumber index in MongoDB if it exists
+    mongoose.connection.collection('users').dropIndex('phoneNumber_1').catch(() => {
+      // Index didn't exist or already dropped
+    });
   } catch (error: any) {
     console.error(`❌ Error: ${error.message}`);
     console.warn(`⚠️ Warning: Server is running without active database connection! Make sure MongoDB Atlas IP is whitelisted.`);

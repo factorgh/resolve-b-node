@@ -52,15 +52,10 @@ function pickRegistrationFields(userData: Record<string, any>) {
 
 export const authService = {
   register: async (userData: Record<string, any>) => {
-    const existingUser = await User.findOne({
-      $or: [
-        { email: userData.email },
-        { phoneNumber: userData.phoneNumber }
-      ]
-    });
+    const existingUser = await User.findOne({ email: userData.email.toLowerCase() });
 
     if (existingUser) {
-      return { success: false, message: 'User with this email or phone number already exists' };
+      return { success: false, message: 'User with this email already exists' };
     }
 
     const safeData = pickRegistrationFields(userData);

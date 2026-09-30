@@ -389,11 +389,6 @@ export const userController = {
         return res.status(400).json(responseFactory.error('This email is already associated with another account'));
       }
 
-      const existingPhone = await User.findOne({ phoneNumber });
-      if (existingPhone) {
-        return res.status(400).json(responseFactory.error('This phone number is already registered'));
-      }
-
       // 5. Hash Password & Onboard Staff User (Set mustResetPassword to true)
       const hashedPassword = await bcrypt.hash(password, 10);
       const newStaff = await User.create({
