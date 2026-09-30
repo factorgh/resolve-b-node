@@ -7,6 +7,7 @@ import { paystackService } from '../services/paystack.service';
 import bcrypt from 'bcryptjs';
 import Application from '../models/application.model';
 import FinancialProduct from '../models/product.model';
+import Institution from '../models/institution.model';
 
 export const userController = {
   getAllUsers: async (req: any, res: Response) => {
@@ -130,7 +131,7 @@ export const userController = {
         return res.status(401).json(responseFactory.unauthorized('User identity not found in token'));
       }
 
-      const { firstName, lastName, email } = req.body;
+      const { firstName, lastName, email, primaryBank, bankAccountNumber, bankBranch } = req.body;
       
       // Basic validation
       if (!firstName || !lastName || !email) {
@@ -146,9 +147,29 @@ export const userController = {
         return res.status(400).json(responseFactory.error('This email is already associated with another account'));
       }
 
+      const updateFields: Record<string, any> = { firstName, lastName, email };
+      if (primaryBank !== undefined) updateFields.primaryBank = primaryBank;
+      if (bankAccountNumber !== undefined) updateFields.bankAccountNumber = bankAccountNumber;
+      if (bankBranch !== undefined) updateFields.bankBranch = bankBranch;
+
+      if (primaryBank) {
+        const cleanName = primaryBank.replace(/Bank/i, '').trim();
+        const matchedInst = await FinancialProduct.findOne({ provider: { $regex: new RegExp(cleanName, 'i') } }) ||
+          await Institution.findOne({
+            $or: [
+              { name: { $regex: new RegExp(cleanName, 'i') } },
+              { legalName: { $regex: new RegExp(cleanName, 'i') } },
+              { name: { $regex: new RegExp(primaryBank.trim(), 'i') } },
+            ]
+          });
+        if (matchedInst && (matchedInst as any)._id) {
+          updateFields.institutionId = (matchedInst as any).institutionId || (matchedInst as any)._id;
+        }
+      }
+
       const updatedUser = await User.findByIdAndUpdate(
         userId,
-        { $set: { firstName, lastName, email } },
+        { $set: updateFields },
         { new: true, runValidators: true }
       ).select('-password');
 

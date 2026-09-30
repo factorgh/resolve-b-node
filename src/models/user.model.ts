@@ -36,6 +36,9 @@ export interface IUser extends Document {
   yearsWithEmployer?: string;
   // Onboarding fields
   goals?: string[];
+  primaryBank?: string;
+  bankAccountNumber?: string;
+  bankBranch?: string;
   employmentStatus?: string;
   monthlyIncome?: string;
   loanDuration?: string;
@@ -96,6 +99,9 @@ const UserSchema: Schema = new Schema(
     yearsWithEmployer: { type: String },
     // Onboarding fields
     goals: { type: [String] },
+    primaryBank: { type: String },
+    bankAccountNumber: { type: String },
+    bankBranch: { type: String },
     employmentStatus: { type: String },
     monthlyIncome: { type: String },
     loanDuration: { type: String },

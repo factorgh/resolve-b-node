@@ -41,6 +41,7 @@ function pickRegistrationFields(userData: Record<string, any>) {
     'residentialAddress', 'city', 'mmda', 'landmark', 'employer', 'sector',
     'occupation', 'ssnitNo', 'workAddress', 'yearsWithEmployer', 'goals',
     'employmentStatus', 'monthlyIncome', 'loanDuration', 'idType', 'idNumber',
+    'primaryBank', 'bankAccountNumber', 'bankBranch', 'institutionId',
     'legalName', 'registrationNumber', 'taxId', 'website', 'streetAddress', 'country',
   ];
   const picked: Record<string, any> = { role };
@@ -79,6 +80,21 @@ export const authService = {
         isVerified: false
       });
       safeData.institutionId = inst._id;
+    } else if (safeData.role === 'Customer') {
+      // Tag financial institution if primaryBank is selected
+      if (safeData.primaryBank && !safeData.institutionId) {
+        const cleanName = safeData.primaryBank.replace(/Bank/i, '').trim();
+        const matchedInst = await Institution.findOne({
+          $or: [
+            { name: { $regex: new RegExp(cleanName, 'i') } },
+            { legalName: { $regex: new RegExp(cleanName, 'i') } },
+            { name: { $regex: new RegExp(safeData.primaryBank.trim(), 'i') } },
+          ],
+        });
+        if (matchedInst) {
+          safeData.institutionId = matchedInst._id;
+        }
+      }
     }
 
     const hashedPassword = await bcrypt.hash(userData.password, 10);
