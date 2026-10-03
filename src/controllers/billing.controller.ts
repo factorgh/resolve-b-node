@@ -8,6 +8,7 @@ import Transaction from "../models/transaction.model";
 import { paystackService } from "../services/paystack.service";
 import { auditLogger } from "../utils/auditLogger";
 import { claimInvoicePaid } from "../services/paymentProcessing.service";
+import { subscriptionReminderService } from "../services/subscriptionReminder.service";
 
 export const billingController = {
   getInvoices: async (req: any, res: Response) => {
@@ -598,6 +599,20 @@ export const billingController = {
             reference: paymentResult.reference,
           },
           "Payment initialized. Redirect to Paystack to complete invoice payment."
+        )
+      );
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  triggerSubscriptionDueReminders: async (req: any, res: Response) => {
+    try {
+      const result = await subscriptionReminderService.checkAndSendSubscriptionDueReminders();
+      return res.json(
+        responseFactory.success(
+          result,
+          `Subscription 3-day due reminder process completed. Dispatched notices to ${result.count} institution(s).`
         )
       );
     } catch (error: any) {

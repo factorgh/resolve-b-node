@@ -113,4 +113,11 @@ router.post(
   billingController.triggerBillingRun,
 );
 
+router.post(
+  "/send-due-reminders",
+  authMiddleware,
+  requireRole(["Admin", "SuperAdmin"]),
+  billingController.triggerSubscriptionDueReminders,
+);
+
 export default router;

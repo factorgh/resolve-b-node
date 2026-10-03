@@ -33,6 +33,7 @@ export interface IInstitution extends Document {
   coreBankingAutoDisburse: boolean;
   coreBankingAuthToken?: string;
   interestRepaymentFrequency: 'weekly' | 'monthly' | 'annually';
+  lastDueReminderSentAt?: Date;
   awards?: string[];
   promotions?: string[];
   createdAt: Date;
@@ -68,6 +69,7 @@ const InstitutionSchema: Schema = new Schema(
     billingStatus: { type: String, enum: ['Active', 'Delinquent', 'Unpaid'], default: 'Active' },
     nextBillingDate: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }, // 30 days from now
     lastBillingDate: { type: Date, default: Date.now },
+    lastDueReminderSentAt: { type: Date },
     coreBankingApiUrl: { type: String, default: 'https://api.sim-bank.resolvebridge.com/v1' },
     coreBankingWebhookSecret: { type: String, default: '' },
     coreBankingAutoDisburse: { type: Boolean, default: false },
