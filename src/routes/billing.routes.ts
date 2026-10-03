@@ -20,6 +20,12 @@ const allowedRoles = [
 ];
 
 router.get(
+  "/my-status",
+  authMiddleware,
+  billingController.getMyInstitutionStatus,
+);
+
+router.get(
   "/invoices",
   authMiddleware,
   requireRole(allowedRoles),

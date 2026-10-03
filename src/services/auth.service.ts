@@ -4,6 +4,7 @@ import User from '../models/user.model';
 import Institution from '../models/institution.model';
 import { storageService } from './storage.service';
 import UserDocument from '../models/document.model';
+import BillingInvoice from '../models/billing.model';
 import { getJwtSecret, JWT_EXPIRES_IN } from '../utils/jwtConfig';
 import { sanitizeUser } from '../utils/sanitizeUser';
 import { resolveRegistrationRole } from '../utils/registerRoles';
@@ -20,13 +21,18 @@ function buildTokenPayload(user: InstanceType<typeof User>) {
   };
 }
 
-function buildAuthResponse(user: InstanceType<typeof User>) {
+function buildAuthResponse(user: InstanceType<typeof User>, extraFields: Record<string, any> = {}) {
   const accessToken = jwt.sign(buildTokenPayload(user), getJwtSecret(), {
     expiresIn: JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'],
   });
 
+  const sanitized = sanitizeUser(user);
+
   return {
-    user: sanitizeUser(user),
+    user: {
+      ...sanitized,
+      ...extraFields,
+    },
     accessToken,
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   };
@@ -160,9 +166,41 @@ export const authService = {
       });
     }
 
+    let isSubscriptionOverdue = false;
+    let institutionBillingStatus = 'Active';
+
+    if (user.institutionId) {
+      const inst = await Institution.findById(user.institutionId);
+      if (inst) {
+        institutionBillingStatus = inst.billingStatus;
+        const now = new Date();
+        const overdueInvoices = await BillingInvoice.countDocuments({
+          institutionId: inst._id,
+          status: { $in: ['Unpaid', 'Overdue'] },
+          dueDate: { $lt: now },
+        });
+
+        if (
+          inst.billingStatus === 'Delinquent' ||
+          inst.billingStatus === 'Unpaid' ||
+          inst.billingStatus === 'Overdue' ||
+          overdueInvoices > 0
+        ) {
+          isSubscriptionOverdue = true;
+          if (inst.billingStatus === 'Active') {
+            inst.billingStatus = 'Overdue';
+            await inst.save();
+          }
+        }
+      }
+    }
+
     return {
       success: true,
-      data: buildAuthResponse(user),
+      data: buildAuthResponse(user, {
+        isSubscriptionOverdue,
+        institutionBillingStatus,
+      }),
     };
   },
 

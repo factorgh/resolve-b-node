@@ -399,6 +399,21 @@ export const billingController = {
 
       const populated = await BillingInvoice.findById(id).populate("institutionId");
 
+      // Reactivate institution billing status if no remaining overdue invoices
+      if (invoice.institutionId) {
+        const remainingOverdue = await BillingInvoice.find({
+          institutionId: invoice.institutionId,
+          _id: { $ne: invoice._id },
+          status: { $in: ["Unpaid", "Overdue"] },
+          dueDate: { $lt: new Date() },
+        });
+        if (remainingOverdue.length === 0) {
+          await Institution.findByIdAndUpdate(invoice.institutionId, {
+            billingStatus: "Active",
+          });
+        }
+      }
+
       const ledgerRef = `INV-PAY-${invoice.reference}`;
       const existingLedger = await Transaction.findOne({ reference: ledgerRef });
       if (!existingLedger) {
@@ -613,6 +628,75 @@ export const billingController = {
         responseFactory.success(
           result,
           `Subscription 3-day due reminder process completed. Dispatched notices to ${result.count} institution(s).`
+        )
+      );
+    } catch (error: any) {
+      return res.status(500).json(responseFactory.error(error.message));
+    }
+  },
+
+  getMyInstitutionStatus: async (req: any, res: Response) => {
+    try {
+      const { role, institutionId } = req.user;
+      if (role === "SuperAdmin" || role === "Admin") {
+        return res.json(
+          responseFactory.success(
+            { isOverdue: false, isPlatformAdmin: true, billingStatus: "Active" },
+            "Platform Admin profile"
+          )
+        );
+      }
+
+      if (!institutionId) {
+        return res.json(
+          responseFactory.success(
+            { isOverdue: false, hasInstitution: false, billingStatus: "Active" },
+            "No institution associated"
+          )
+        );
+      }
+
+      const inst = await Institution.findById(institutionId);
+      if (!inst) {
+        return res
+          .status(404)
+          .json(responseFactory.notFound("Institution not found"));
+      }
+
+      const now = new Date();
+      // Find any unpaid or overdue invoices where dueDate is in the past
+      const overdueInvoices = await BillingInvoice.find({
+        institutionId: inst._id,
+        status: { $in: ["Unpaid", "Overdue"] },
+        dueDate: { $lt: now },
+      });
+
+      const isOverdue =
+        inst.billingStatus === "Delinquent" ||
+        inst.billingStatus === "Unpaid" ||
+        inst.billingStatus === "Overdue" ||
+        overdueInvoices.length > 0;
+
+      // Auto-update institution billingStatus to Overdue if unpaid & past due date
+      if (isOverdue && inst.billingStatus === "Active") {
+        inst.billingStatus = "Overdue";
+        await inst.save();
+      }
+
+      return res.json(
+        responseFactory.success(
+          {
+            institutionId: inst._id,
+            institutionName: inst.name,
+            subscriptionFee: inst.subscriptionFee,
+            billingCycle: inst.billingCycle,
+            billingStatus: inst.billingStatus,
+            nextBillingDate: inst.nextBillingDate,
+            isOverdue,
+            overdueInvoicesCount: overdueInvoices.length,
+            overdueInvoices,
+          },
+          "Institutional subscription status retrieved successfully"
         )
       );
     } catch (error: any) {

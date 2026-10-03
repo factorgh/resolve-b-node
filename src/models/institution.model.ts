@@ -25,7 +25,7 @@ export interface IInstitution extends Document {
   accumulatedArrears: number;
   paystackAuthorizationCode?: string;
   billingCycle: 'monthly' | 'annually';
-  billingStatus: 'Active' | 'Delinquent' | 'Unpaid';
+  billingStatus: 'Active' | 'Delinquent' | 'Unpaid' | 'Overdue';
   nextBillingDate: Date;
   lastBillingDate: Date;
   coreBankingApiUrl?: string;
@@ -66,7 +66,7 @@ const InstitutionSchema: Schema = new Schema(
     accumulatedArrears: { type: Number, default: 0 }, // Unbilled connection fee arrears
     paystackAuthorizationCode: { type: String, default: '' }, // Paystack recurring payment authorization code
     billingCycle: { type: String, enum: ['monthly', 'annually'], default: 'monthly' },
-    billingStatus: { type: String, enum: ['Active', 'Delinquent', 'Unpaid'], default: 'Active' },
+    billingStatus: { type: String, enum: ['Active', 'Delinquent', 'Unpaid', 'Overdue'], default: 'Active' },
     nextBillingDate: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }, // 30 days from now
     lastBillingDate: { type: Date, default: Date.now },
     lastDueReminderSentAt: { type: Date },
