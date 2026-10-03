@@ -70,7 +70,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-012-3456',
     creditLimit: 10000000,
-    subscriptionFee: 1500,
+    subscriptionFee: 80000,
     connectionFee: 50,
     adminEmail: 'gcbadmin@resolvebridge.com',
     adminPhone: '+233241000001',
@@ -146,7 +146,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-088-9900',
     creditLimit: 8500000,
-    subscriptionFee: 1200,
+    subscriptionFee: 80000,
     connectionFee: 45,
     adminEmail: 'fidelityadmin@resolvebridge.com',
     adminPhone: '+233241000002',
@@ -206,7 +206,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-112-4040',
     creditLimit: 12000000,
-    subscriptionFee: 2000,
+    subscriptionFee: 80000,
     connectionFee: 60,
     adminEmail: 'stanbicadmin@resolvebridge.com',
     adminPhone: '+233241000003',
@@ -266,7 +266,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-030-2211',
     creditLimit: 7500000,
-    subscriptionFee: 1000,
+    subscriptionFee: 80000,
     connectionFee: 40,
     adminEmail: 'calbankadmin@resolvebridge.com',
     adminPhone: '+233241000004',
@@ -326,7 +326,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-044-8822',
     creditLimit: 6000000,
-    subscriptionFee: 1000,
+    subscriptionFee: 80000,
     connectionFee: 40,
     adminEmail: 'nibadmin@resolvebridge.com',
     adminPhone: '+233241000005',
@@ -386,7 +386,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-015-8833',
     creditLimit: 11000000,
-    subscriptionFee: 1800,
+    subscriptionFee: 80000,
     connectionFee: 55,
     adminEmail: 'absaadmin@resolvebridge.com',
     adminPhone: '+233241000006',
@@ -446,7 +446,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-028-1199',
     creditLimit: 14000000,
-    subscriptionFee: 2000,
+    subscriptionFee: 80000,
     connectionFee: 60,
     adminEmail: 'ecobankadmin@resolvebridge.com',
     adminPhone: '+233241000007',
@@ -506,7 +506,7 @@ const institutionsToSeed: InstitutionSeedData[] = [
     country: 'Ghana',
     postalCode: 'GA-115-7722',
     creditLimit: 9000000,
-    subscriptionFee: 1200,
+    subscriptionFee: 80000,
     connectionFee: 45,
     adminEmail: 'cbgadmin@resolvebridge.com',
     adminPhone: '+233241000008',
@@ -580,6 +580,7 @@ export async function seedInstitutionsData() {
         institution.isActive = true;
         institution.isVerified = true;
         institution.creditLimit = instData.creditLimit;
+        institution.subscriptionFee = instData.subscriptionFee;
         if (instData.logoUrl) institution.logoUrl = instData.logoUrl;
         if (instData.website) institution.website = instData.website;
         await institution.save();

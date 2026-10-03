@@ -60,7 +60,7 @@ const InstitutionSchema: Schema = new Schema(
     isVerified: { type: Boolean, default: false },
     creditLimit: { type: Number },
     currentCreditUsed: { type: Number, default: 0 },
-    subscriptionFee: { type: Number, default: 500 }, // Default GH₵ 500 monthly fee
+    subscriptionFee: { type: Number, default: 80000 }, // Default GH₵ 80,000 monthly fee for financial institutions
     connectionFee: { type: Number, default: 50 }, // Default GH₵ 50 per connection
     accumulatedArrears: { type: Number, default: 0 }, // Unbilled connection fee arrears
     paystackAuthorizationCode: { type: String, default: '' }, // Paystack recurring payment authorization code
