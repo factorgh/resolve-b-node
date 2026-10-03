@@ -266,64 +266,92 @@ export const vehicleController = {
           .json(responseFactory.notFound("This upload link is invalid or has expired"));
       }
 
-      const {
-        make,
-        model,
-        year,
-        bodyType,
-        fuel,
-        transmission,
-        mileageKm,
-        vin,
-        condition,
-        color,
-        location,
-        description,
-        dealerPrice,
-        photos,
-        documents,
-      } = req.body;
+      const rawVehicles = Array.isArray(req.body?.vehicles)
+        ? req.body.vehicles
+        : Array.isArray(req.body)
+          ? req.body
+          : [req.body];
 
-      const price = Number(dealerPrice);
-      if (!make || !model || !year || !price || price <= 0) {
-        return res
-          .status(400)
-          .json(responseFactory.error("Make, model, year, and dealer price are required"));
+      const vehicleItems = rawVehicles.filter(Boolean);
+
+      if (vehicleItems.length === 0) {
+        return res.status(400).json(responseFactory.error("At least one vehicle is required"));
       }
 
-      const vehicle = await Vehicle.create({
-        dealerName: link.dealerName,
-        dealerCompany: link.dealerCompany,
-        dealerPhone: link.dealerPhone,
-        dealerEmail: link.dealerEmail,
-        make,
-        vehicleModel: model,
-        year: Number(year),
-        bodyType: bodyType || "SUV",
-        fuel: fuel || "Petrol",
-        transmission: transmission || "Auto",
-        mileageKm: Number(mileageKm) || 0,
-        vin: vin || "",
-        condition: condition || "Used",
-        color: color || "",
-        location: location || "Accra",
-        description: description || "",
-        dealerPrice: price,
-        markup: 0,
-        customerPrice: price,
-        photos: Array.isArray(photos) ? photos : [],
-        documents: Array.isArray(documents) ? documents : [],
-        status: "PendingReview",
-        uploadTokenId: link._id,
-      });
+      const remainingUploads = Math.max(0, link.maxUploads - link.usedCount);
+      if (vehicleItems.length > remainingUploads) {
+        return res
+          .status(400)
+          .json(
+            responseFactory.error(
+              `This link only has ${remainingUploads} upload(s) remaining, but ${vehicleItems.length} vehicle(s) were submitted.`
+            )
+          );
+      }
 
-      link.usedCount += 1;
+      for (let i = 0; i < vehicleItems.length; i++) {
+        const item = vehicleItems[i];
+        const price = Number(item.dealerPrice);
+        if (!item.make || !item.model || !item.year || !price || price <= 0) {
+          return res
+            .status(400)
+            .json(
+              responseFactory.error(
+                `Vehicle #${i + 1} (${item.make || "Vehicle"} ${item.model || ""}) is missing make, model, year, or a valid dealer price.`
+              )
+            );
+        }
+      }
+
+      const createdVehicles = [];
+      for (const item of vehicleItems) {
+        const price = Number(item.dealerPrice);
+        const vehicle = await Vehicle.create({
+          dealerName: link.dealerName,
+          dealerCompany: link.dealerCompany,
+          dealerPhone: link.dealerPhone,
+          dealerEmail: link.dealerEmail,
+          make: item.make,
+          vehicleModel: item.model,
+          year: Number(item.year),
+          bodyType: item.bodyType || "SUV",
+          fuel: item.fuel || "Petrol",
+          transmission: item.transmission || "Auto",
+          mileageKm: Number(item.mileageKm) || 0,
+          vin: item.vin || "",
+          condition: item.condition || "Used",
+          color: item.color || "",
+          location: item.location || "Accra",
+          description: item.description || "",
+          dealerPrice: price,
+          markup: 0,
+          customerPrice: price,
+          photos: Array.isArray(item.photos) ? item.photos : [],
+          documents: Array.isArray(item.documents) ? item.documents : [],
+          status: "PendingReview",
+          uploadTokenId: link._id,
+        });
+        createdVehicles.push(vehicle);
+      }
+
+      link.usedCount += vehicleItems.length;
       await link.save();
 
       return res.status(201).json(
         responseFactory.success(
-          { id: vehicle._id, status: vehicle.status },
-          "Vehicle submitted for ResolveBridge verification",
+          {
+            count: createdVehicles.length,
+            ids: createdVehicles.map((v) => v._id),
+            vehicles: createdVehicles.map((v) => ({
+              id: v._id,
+              make: v.make,
+              model: v.vehicleModel,
+              year: v.year,
+              dealerPrice: v.dealerPrice,
+              status: v.status,
+            })),
+          },
+          `${createdVehicles.length} vehicle(s) submitted for ResolveBridge verification`,
         ),
       );
     } catch (error: any) {
